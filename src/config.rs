@@ -1,112 +1,153 @@
-use clap::Parser;
-use serde::{Deserialize, Serialize};
+use ini::Ini;
 use std::path::PathBuf;
+use std::fs;
+use std::io::Write;
 
-#[derive(Parser, Debug, Serialize, Deserialize, Clone)]
-#[command(author, version, about, long_about = None)]
+#[derive(Debug, Clone)]
 pub struct Config {
-    /// Auto-hide: Shows dock on hotspot hover, hides when mouse leaves
-    #[arg(short, long)]
+    pub current_theme: String,
     pub auto_hide: bool,
-
-    /// Resident: Keeps the dock running in the background without a hotspot
-    #[arg(short, long)]
     pub resident: bool,
-
-    /// Position: bottom, top, left, or right
-    #[arg(short, long, default_value = "bottom")]
     pub position: String,
-
-    /// Icon size in pixels
-    #[arg(short, long, default_value_t = 32)]
     pub icon_size: i32,
-
-    /// Padding inside the dock
-    #[arg(long, default_value_t = 4)]
     pub padding: i32,
-
-    /// Spacing between icons
-    #[arg(long, default_value_t = 6)]
     pub spacing: i32,
-
-    /// Corner radius
-    #[arg(long, default_value_t = 10)]
     pub radius: i32,
-
-    /// Background opacity (0.0 to 1.0)
-    #[arg(long, default_value_t = 0.8)]
     pub opacity: f32,
-
-    /// Full screen: Makes the dock take the full width/height of the monitor
-    #[arg(short, long)]
     pub full_screen: bool,
-
-    /// Exclusive Zone: Moves other windows to prevent overlap
-    #[arg(short, long)]
     pub exclusive_zone: bool,
-
-    /// Output: Specify a specific monitor name (e.g., DP-1)
-    #[arg(short, long)]
     pub output: Option<String>,
-
-    /// Launcher Command: Command to run when the launcher button is clicked
-    #[arg(short, long, default_value = "nwg-drawer")]
     pub launcher_command: String,
-
-    /// Styling: Path to a custom CSS file
-    #[arg(short, long)]
     pub style: Option<PathBuf>,
-
-    /// Workspaces: Number of workspaces to account for
-    #[arg(short, long, default_value_t = 10)]
     pub workspaces: u32,
-
-    /// Bottom margin in pixels
-    #[arg(long, default_value_t = 0)]
     pub margin_bottom: i32,
-
-    /// Left margin in pixels
-    #[arg(long, default_value_t = 0)]
     pub margin_left: i32,
-
-    /// Right margin in pixels
-    #[arg(long, default_value_t = 0)]
     pub margin_right: i32,
-
-    /// Top margin in pixels
-    #[arg(long, default_value_t = 0)]
     pub margin_top: i32,
-
-    /// Disables the launcher button
-    #[arg(long)]
     pub no_launcher: bool,
-
-    /// Pinned applications (list of desktop IDs)
-    #[arg(skip)]
     pub pinned_apps: Vec<String>,
+    pub smart_view: bool,
+    pub auto_hide_delay: i32,
+    pub system_gap_used: bool,
+    pub margin: i32,
+    pub context_pos: i32,
+    pub mode: String,
+    pub fps: i32,
+    pub buffer_size: i32,
+    pub show_delay: i32,
+    pub hide_delay: i32,
+    pub move_delay: i32,
 }
 
 impl Config {
     pub fn new() -> Self {
-        let mut config = Config::parse();
-        
-        // Load pinned apps from a config file if it exists
+        let mut config = Config {
+            current_theme: "lotos".to_string(),
+            auto_hide: false,
+            resident: false,
+            position: "bottom".to_string(),
+            icon_size: 23,
+            padding: 4,
+            spacing: 5,
+            radius: 10,
+            opacity: 0.8,
+            full_screen: false,
+            exclusive_zone: true,
+            output: None,
+            launcher_command: String::new(),
+            style: None,
+            workspaces: 10,
+            margin_bottom: 0,
+            margin_left: 0,
+            margin_right: 0,
+            margin_top: 0,
+            no_launcher: true,
+            pinned_apps: Vec::new(),
+            smart_view: false,
+            auto_hide_delay: 400,
+            system_gap_used: true,
+            margin: 8,
+            context_pos: 5,
+            mode: "none".to_string(),
+            fps: 30,
+            buffer_size: 5,
+            show_delay: 500,
+            hide_delay: 350,
+            move_delay: 100,
+        };
+
         if let Some(mut path) = dirs::config_dir() {
-            path.push("rust-dock/config.json");
+            path.push("rust-dock/hypr-dock.conf");
             if path.exists() {
-                if let Ok(file_config) = std::fs::read_to_string(path) {
-                    if let Ok(json_config) = serde_json::from_str::<serde_json::Value>(&file_config) {
-                        if let Some(pinned) = json_config.get("pinned_apps").and_then(|v| v.as_array()) {
-                            config.pinned_apps = pinned.iter()
-                                .filter_map(|v| v.as_str())
-                                .map(|s| s.to_string())
-                                .collect();
+                if let Ok(ini) = Ini::load_from_file(&path) {
+                    if let Some(general) = ini.section(Some("General")) {
+                        if let Some(v) = general.get("CurrentTheme") { config.current_theme = v.to_string(); }
+                        if let Some(v) = general.get("IconSize") { config.icon_size = v.parse().unwrap_or(23); }
+                        if let Some(v) = general.get("Position") { config.position = v.to_string(); }
+                        if let Some(v) = general.get("Exclusive") { config.exclusive_zone = v.parse().unwrap_or(true); }
+                        if let Some(v) = general.get("SmartView") { config.smart_view = v.parse().unwrap_or(false); }
+                        if let Some(v) = general.get("AutoHideDelay") { config.auto_hide_delay = v.parse().unwrap_or(400); }
+                        if let Some(v) = general.get("SystemGapUsed") { config.system_gap_used = v.parse().unwrap_or(true); }
+                        if let Some(v) = general.get("Margin") { config.margin = v.parse().unwrap_or(8); }
+                        if let Some(v) = general.get("ContextPos") { config.context_pos = v.parse().unwrap_or(5); }
+                    }
+                    if let Some(preview) = ini.section(Some("General.preview")) {
+                        if let Some(v) = preview.get("Mode") { config.mode = v.to_string(); }
+                        if let Some(v) = preview.get("FPS") { config.fps = v.parse().unwrap_or(30); }
+                        if let Some(v) = preview.get("BufferSize") { config.buffer_size = v.parse().unwrap_or(5); }
+                        if let Some(v) = preview.get("ShowDelay") { config.show_delay = v.parse().unwrap_or(500); }
+                        if let Some(v) = preview.get("HideDelay") { config.hide_delay = v.parse().unwrap_or(350); }
+                        if let Some(v) = preview.get("MoveDelay") { config.move_delay = v.parse().unwrap_or(100); }
+                    }
+                    if let Some(theme) = ini.section(Some("Theme")) {
+                        if let Some(v) = theme.get("Spacing") { config.spacing = v.parse().unwrap_or(5); }
+                    }
+                }
+            }
+        }
+
+        config.load_pinned_apps();
+        config
+    }
+
+    pub fn load_pinned_apps(&mut self) {
+        self.pinned_apps.clear();
+        if let Some(mut path) = dirs::data_local_dir() {
+            path.push("rust-dock/pinned");
+            if path.exists() {
+                if let Ok(content) = fs::read_to_string(&path) {
+                    for line in content.lines() {
+                        if !line.trim().is_empty() {
+                            self.pinned_apps.push(line.trim().to_string());
                         }
                     }
                 }
             }
         }
-        
-        config
+    }
+
+    pub fn save_pinned_apps(&self) {
+        if let Some(mut path) = dirs::data_local_dir() {
+            path.push("rust-dock");
+            let _ = fs::create_dir_all(&path);
+            path.push("pinned");
+            if let Ok(mut file) = fs::File::create(&path) {
+                for app in &self.pinned_apps {
+                    let _ = writeln!(file, "{}", app);
+                }
+            }
+        }
+    }
+
+    pub fn pin_app(&mut self, app_id: &str) {
+        if !self.pinned_apps.contains(&app_id.to_string()) {
+            self.pinned_apps.push(app_id.to_string());
+            self.save_pinned_apps();
+        }
+    }
+
+    pub fn unpin_app(&mut self, app_id: &str) {
+        self.pinned_apps.retain(|id| id != app_id);
+        self.save_pinned_apps();
     }
 }
