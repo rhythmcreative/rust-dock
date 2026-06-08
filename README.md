@@ -1,5 +1,7 @@
 <div align="center">
+ 
 <img width="200" height="200" alt="rust-dock" src="https://github.com/user-attachments/assets/794946b8-8976-4b6e-8268-fc09940a5473" />
+
 </div>
 
 <h1 align="center">rust-dock</h1>
@@ -11,9 +13,10 @@
 [![Fedora](https://img.shields.io/badge/Fedora-51A2DA?style=for-the-badge&logo=fedora&logoColor=white "Fedora - Innovative, Free, and Open Source")](https://fedoraproject.org/)
 
 </div>
+
 <div align="center">
  <p><i>A modern, high-performance dock for Hyprland built with Rust and GTK4.</i></p>
-
+</div>
 
 ## Overview
 
