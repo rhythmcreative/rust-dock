@@ -8,15 +8,21 @@
 
 <div align="center">
 
-[![Arch Linux](https://img.shields.io/badge/Arch_Linux-1793d1?style=for-the-badge&logo=archlinux&logoColor=white "Arch Linux - A simple, lightweight distribution")](https://archlinux.org/)
-[![Debian](https://img.shields.io/badge/Debian-A81D33?style=for-the-badge&logo=debian&logoColor=white "Debian - The Universal Operating System")](https://www.debian.org/)
-[![Fedora](https://img.shields.io/badge/Fedora-51A2DA?style=for-the-badge&logo=fedora&logoColor=white "Fedora - Innovative, Free, and Open Source")](https://fedoraproject.org/)
+[![GTK4](https://img.shields.io/badge/GTK4-f5c2e7?style=for-the-badge "GTK4 - The Toolkit for Creating Graphical User Interfaces")](https://www.gtk.org/)
+[![Rust](https://img.shields.io/badge/Rust-f38ba8?style=for-the-badge "Rust - Systems programming language")](https://www.rust-lang.org/)
+[![Cargo](https://img.shields.io/badge/Cargo-fab387?style=for-the-badge "Cargo - The Rust package manager")](https://doc.rust-lang.org/cargo/)
+[![Hyprland](https://img.shields.io/badge/Hyprland-abd6fd?style=for-the-badge "Hyprland - A dynamic tiling Wayland compositor based on wlroots that doesn't sacrifice on its looks")](https://hyprland.org/)
+[![grim](https://img.shields.io/badge/grim-94e2d5?style=for-the-badge "grim - Grab images from a Wayland compositor for window-preview thumbnails")](https://git.sr.ht/~emersion/grim)
 
 </div>
 
 <div align="center">
  <p><i>A modern, high-performance dock for Hyprland built with Rust and GTK4.</i></p>
 </div>
+
+[![Typing SVG](https://readme-typing-svg.herokuapp.com?font=Fira+Code&pause=1000&color=F7F7F7&vCenter=true&multiline=true&width=435&height=35&lines=PREVIEW)](https://git.io/typing-svg)
+
+
 
 ## Overview
 
