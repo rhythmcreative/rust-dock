@@ -60,15 +60,15 @@ pub fn load_css(config: &Config) {
 
         /* ── Preview window (dock-preview layer surface) ──── */
         window.dock-preview-window {{
-            background: transparent;
-            border: none;
-            box-shadow: none;
+            background: transparent !important;
+            border: none !important;
+            box-shadow: none !important;
         }}
         /* The preview-row is the direct child of the preview window, so we
            style it as a single cohesive panel that groups all window cards. */
         .preview-row {{
             background-color: alpha(@background, 0.92);
-            border: 1px solid alpha(@color1, 0.25);
+            border: none;
             border-radius: 12px;
             padding: 8px;
             box-shadow: 0 6px 24px alpha(#000, 0.35);
