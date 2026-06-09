@@ -6,7 +6,11 @@ use std::io::Write;
 #[derive(Debug, Clone)]
 pub struct Config {
     pub current_theme: String,
+    /// Reserved for future use (not yet wired to behavior).
+    #[allow(dead_code)]
     pub auto_hide: bool,
+    /// Reserved for future use (not yet wired to behavior).
+    #[allow(dead_code)]
     pub resident: bool,
     pub position: String,
     pub icon_size: i32,
@@ -16,9 +20,12 @@ pub struct Config {
     pub opacity: f32,
     pub full_screen: bool,
     pub exclusive_zone: bool,
+    pub layer: String,
     pub output: Option<String>,
     pub launcher_command: String,
     pub style: Option<PathBuf>,
+    /// Reserved for future use (not yet wired to behavior).
+    #[allow(dead_code)]
     pub workspaces: u32,
     pub margin_bottom: i32,
     pub margin_left: i32,
@@ -47,12 +54,13 @@ impl Config {
             resident: false,
             position: "bottom".to_string(),
             icon_size: 23,
-            padding: 4,
-            spacing: 5,
+            padding: 2,
+            spacing: 4,
             radius: 10,
             opacity: 0.8,
             full_screen: false,
             exclusive_zone: true,
+            layer: "top".to_string(),
             output: None,
             launcher_command: String::new(),
             style: None,
@@ -65,7 +73,7 @@ impl Config {
             pinned_apps: Vec::new(),
             smart_view: false,
             auto_hide_delay: 400,
-            system_gap_used: true,
+            system_gap_used: false,
             margin: 8,
             context_pos: 5,
             mode: "none".to_string(),
@@ -90,6 +98,13 @@ impl Config {
                         if let Some(v) = general.get("SystemGapUsed") { config.system_gap_used = v.parse().unwrap_or(true); }
                         if let Some(v) = general.get("Margin") { config.margin = v.parse().unwrap_or(8); }
                         if let Some(v) = general.get("ContextPos") { config.context_pos = v.parse().unwrap_or(5); }
+                        if let Some(v) = general.get("Padding") { config.padding = v.parse().unwrap_or(4); }
+                        if let Some(v) = general.get("Radius") { config.radius = v.parse().unwrap_or(10); }
+                        if let Some(v) = general.get("Opacity") { config.opacity = v.parse().unwrap_or(0.8); }
+                        if let Some(v) = general.get("Output") { if !v.trim().is_empty() { config.output = Some(v.to_string()); } }
+                        if let Some(v) = general.get("LauncherCommand") { config.launcher_command = v.to_string(); }
+                        if let Some(v) = general.get("NoLauncher") { config.no_launcher = v.parse().unwrap_or(true); }
+                        if let Some(v) = general.get("Layer") { config.layer = v.to_string(); }
                     }
                     if let Some(preview) = ini.section(Some("General.preview")) {
                         if let Some(v) = preview.get("Mode") { config.mode = v.to_string(); }
@@ -148,6 +163,20 @@ impl Config {
 
     pub fn unpin_app(&mut self, app_id: &str) {
         self.pinned_apps.retain(|id| id != app_id);
+        self.save_pinned_apps();
+    }
+
+    /// Move `dragged` to the slot currently occupied by `target` (for drag & drop
+    /// reordering of pinned apps), then persist the new order.
+    pub fn reorder_pinned(&mut self, dragged: &str, target: &str) {
+        if dragged == target { return; }
+        let Some(from) = self.pinned_apps.iter().position(|a| a == dragged) else { return; };
+        let item = self.pinned_apps.remove(from);
+        let to = self.pinned_apps
+            .iter()
+            .position(|a| a == target)
+            .unwrap_or(self.pinned_apps.len());
+        self.pinned_apps.insert(to, item);
         self.save_pinned_apps();
     }
 }

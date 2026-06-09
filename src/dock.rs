@@ -1,46 +1,61 @@
-use gio;
 use gtk4::prelude::*;
 use gtk4::{
     Application, ApplicationWindow, Box, Button, Image, Orientation,
-    Label, EventControllerMotion,
+    Label, EventControllerMotion, Align,
 };
 use gtk4_layer_shell::{Edge, Layer, LayerShell};
 use crate::config::Config;
 use crate::hyprland_handler::{HyprlandHandler, HyprClient, capture_window_screenshot};
 use crate::app_info::AppInfo;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::cell::{RefCell, Cell};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 
 // ── Preview window state shared across all buttons ──────────────────────────
-struct PreviewState {
+pub struct PreviewState {
     /// The dedicated layer-shell preview window (never destroyed, just shown/hidden)
-    win:              ApplicationWindow,
+    pub win:              ApplicationWindow,
     /// Which app class is currently shown (empty = hidden)
-    active_class:     String,
+    pub active_class:     String,
     /// Whether the preview window is visible right now
-    visible:          bool,
+    pub visible:          bool,
     /// Which screen edge the dock is on ("bottom", "top", "left", "right")
-    dock_position:    String,
+    pub dock_position:    String,
     /// Smart hide timer of the main dock window
-    smart_hide_timer: Rc<Cell<Option<glib::SourceId>>>,
+    pub smart_hide_timer: Rc<Cell<Option<glib::SourceId>>>,
     /// Whether smart view is enabled
-    smart_view:       bool,
+    pub smart_view:       bool,
     /// Auto hide delay of the main dock window
-    auto_hide_delay:  u64,
-    /// Edge margin fallback
-    edge_margin:      i32,
+    pub auto_hide_delay:  u64,
     /// The main dock window
-    dock_win:         ApplicationWindow,
+    pub dock_win:         ApplicationWindow,
 }
 
 pub struct Dock {
     pub window:           ApplicationWindow,
     pub detect_window:    Option<ApplicationWindow>,
     pub box_container:    Box,
+    /// Workspace/taskbar row (non-pinned running apps) appended after pinned icons.
+    pub workspace_box:    Box,
+    /// Thin separator between pinned icons and the running-apps section.
+    pub ws_separator:     gtk4::Separator,
     pub config:           Rc<RefCell<Config>>,
     pub hyprland:         HyprlandHandler,
-    pub smart_hide_timer: Rc<Cell<Option<glib::SourceId>>>,
+    /// Weak handle to self so widget callbacks (e.g. pin/unpin) can rebuild the dock.
+    self_weak:            RefCell<Weak<Dock>>,
+    /// (app id, button) pairs of the current icons, used to toggle the active highlight.
+    active_buttons:       RefCell<Vec<(String, Button)>>,
+    /// Class of the currently focused app, lowercased.
+    active_class:         RefCell<String>,
+    pub preview_state:    Rc<RefCell<PreviewState>>,
+    pub show_timer:       Rc<Cell<Option<glib::SourceId>>>,
+    pub hide_timer:       Rc<Cell<Option<glib::SourceId>>>,
+}
+
+fn safe_remove_source(id: glib::SourceId) {
+    unsafe {
+        glib::ffi::g_source_remove(id.as_raw());
+    }
 }
 
 impl Dock {
@@ -53,10 +68,22 @@ impl Dock {
             .build();
 
         window.init_layer_shell();
-        window.set_layer(Layer::Top);
         window.set_namespace(Some("rust-dock"));
+        window.set_decorated(false);
 
         let cfg = config.borrow();
+
+        let mut layer = match cfg.layer.as_str() {
+            "overlay" => Layer::Overlay,
+            "bottom" => Layer::Bottom,
+            "background" => Layer::Background,
+            _ => Layer::Top,
+        };
+        if cfg.smart_view {
+            layer = Layer::Bottom;
+        }
+        window.set_layer(layer);
+
         match cfg.position.as_str() {
             "top" => {
                 window.set_anchor(Edge::Top, true);
@@ -75,14 +102,51 @@ impl Dock {
                 if cfg.full_screen { window.set_anchor(Edge::Left, true); window.set_anchor(Edge::Right, true); }
             }
         }
-        window.set_exclusive_zone(-1);
+
+        if cfg.exclusive_zone && !cfg.smart_view {
+            window.auto_exclusive_zone_enable();
+        } else {
+            window.set_exclusive_zone(-1);
+        }
 
         let mut margin = cfg.margin;
         if cfg.system_gap_used { margin = HyprlandHandler::new().get_gaps_out(); }
-        window.set_margin(Edge::Bottom, cfg.margin_bottom + margin);
-        window.set_margin(Edge::Top,    cfg.margin_top    + margin);
-        window.set_margin(Edge::Left,   cfg.margin_left   + margin);
-        window.set_margin(Edge::Right,  cfg.margin_right  + margin);
+
+        window.set_margin(Edge::Bottom, 0);
+        window.set_margin(Edge::Top,    0);
+        window.set_margin(Edge::Left,   0);
+        window.set_margin(Edge::Right,  0);
+
+        match cfg.position.as_str() {
+            "top" => {
+                window.set_margin(Edge::Top, cfg.margin_top + margin);
+                if cfg.full_screen {
+                    window.set_margin(Edge::Left, cfg.margin_left + margin);
+                    window.set_margin(Edge::Right, cfg.margin_right + margin);
+                }
+            }
+            "left" => {
+                window.set_margin(Edge::Left, cfg.margin_left + margin);
+                if cfg.full_screen {
+                    window.set_margin(Edge::Top, cfg.margin_top + margin);
+                    window.set_margin(Edge::Bottom, cfg.margin_bottom + margin);
+                }
+            }
+            "right" => {
+                window.set_margin(Edge::Right, cfg.margin_right + margin);
+                if cfg.full_screen {
+                    window.set_margin(Edge::Top, cfg.margin_top + margin);
+                    window.set_margin(Edge::Bottom, cfg.margin_bottom + margin);
+                }
+            }
+            _ => {
+                window.set_margin(Edge::Bottom, cfg.margin_bottom + margin);
+                if cfg.full_screen {
+                    window.set_margin(Edge::Left, cfg.margin_left + margin);
+                    window.set_margin(Edge::Right, cfg.margin_right + margin);
+                }
+            }
+        }
 
         let orientation = if cfg.position == "left" || cfg.position == "right" {
             Orientation::Vertical
@@ -99,10 +163,10 @@ impl Dock {
             .vexpand(false)
             .css_classes(vec!["dock-container".to_string()])
             .build();
-        box_container.set_margin_start(6);
-        box_container.set_margin_end(6);
-        box_container.set_margin_top(4);
-        box_container.set_margin_bottom(4);
+        box_container.set_margin_start(4);
+        box_container.set_margin_end(4);
+        box_container.set_margin_top(2);
+        box_container.set_margin_bottom(2);
         window.set_child(Some(&box_container));
 
         if let Some(monitor_name) = &cfg.output {
@@ -120,6 +184,7 @@ impl Dock {
         let smart_view       = cfg.smart_view;
         let auto_hide_delay  = cfg.auto_hide_delay as u64;
         let dock_position    = cfg.position.clone();
+        // smart-view always needs Bottom so the dock can hide behind windows.
         if smart_view { window.set_layer(Layer::Bottom); }
 
         // ── smart-view detect window ─────────────────────────────────────
@@ -181,13 +246,13 @@ impl Dock {
             let st_f        = Rc::clone(&smart_hide_timer);
             let wc_f        = window.clone();
             motion_det.connect_enter(move |_, _, _| {
-                if let Some(id) = st_f.take() { id.remove(); }
+                if let Some(id) = st_f.take() { safe_remove_source(id); }
                 wc_f.set_layer(Layer::Top);
             });
             let st_u  = Rc::clone(&smart_hide_timer);
             let wc_u  = window.clone();
             motion_det.connect_leave(move |_| {
-                if let Some(id) = st_u.take() { id.remove(); }
+                if let Some(id) = st_u.take() { safe_remove_source(id); }
                 let wc = wc_u.clone();
                 let ti = Rc::clone(&st_u);
                 let id = glib::timeout_add_local(std::time::Duration::from_millis(auto_hide_delay), move || {
@@ -206,7 +271,7 @@ impl Dock {
         let st_f2 = Rc::clone(&smart_hide_timer);
         motion.connect_enter(move |_, _, _| {
             if smart_view {
-                if let Some(id) = st_f2.take() { id.remove(); }
+                if let Some(id) = st_f2.take() { safe_remove_source(id); }
                 wc1.set_layer(Layer::Top);
             }
         });
@@ -214,7 +279,7 @@ impl Dock {
         let st_u2 = Rc::clone(&smart_hide_timer);
         motion.connect_leave(move |_| {
             if smart_view {
-                if let Some(id) = st_u2.take() { id.remove(); }
+                if let Some(id) = st_u2.take() { safe_remove_source(id); }
                 let wc = wc2.clone();
                 let ti = Rc::clone(&st_u2);
                 let id = glib::timeout_add_local(std::time::Duration::from_millis(auto_hide_delay), move || {
@@ -226,8 +291,7 @@ impl Dock {
         window.add_controller(motion);
 
         // ── Dedicated preview window ─────────────────────────────────────
-        // Layer::Overlay so it floats above everything; it stays alive forever,
-        // we just show/hide it and swap its content.
+        // Layer::Overlay so it floats above everything.
         let preview_win = ApplicationWindow::builder()
             .application(app)
             .title("dock-preview")
@@ -238,9 +302,8 @@ impl Dock {
         preview_win.set_namespace(Some("dock-preview"));
         preview_win.set_layer(Layer::Overlay);
         preview_win.set_exclusive_zone(-1);
+        preview_win.set_decorated(false);
 
-        // Anchor the preview window to the same edge as the dock
-        // We also must anchor to Top/Left so that margins can push it into position.
         match dock_position.as_str() {
             "top"   => { preview_win.set_anchor(Edge::Top, true); preview_win.set_anchor(Edge::Left, true); }
             "left"  => { preview_win.set_anchor(Edge::Left, true); preview_win.set_anchor(Edge::Top, true); }
@@ -261,22 +324,122 @@ impl Dock {
             }
         }
         preview_win.add_css_class("dock-preview-window");
-        // Don't show preview_win yet — hide until needed
+
+        let show_timer: Rc<Cell<Option<glib::SourceId>>> = Rc::new(Cell::new(None));
+        let hide_timer: Rc<Cell<Option<glib::SourceId>>> = Rc::new(Cell::new(None));
+        let preview_state = Rc::new(RefCell::new(PreviewState {
+            win:              preview_win.clone(),
+            active_class:     String::new(),
+            visible:          false,
+            dock_position:    dock_position.clone(),
+            smart_hide_timer: Rc::clone(&smart_hide_timer),
+            smart_view,
+            auto_hide_delay,
+            dock_win:         window.clone(),
+        }));
+
+        // Add motion controller to the preview window itself so that
+        // moving into the preview cancels the hide timer.
+        let ht_preview  = Rc::clone(&hide_timer);
+        let st_preview  = Rc::clone(&show_timer);
+        let ps_preview  = Rc::clone(&preview_state);
+        let pv_motion   = EventControllerMotion::new();
+        pv_motion.connect_enter(move |_, _, _| {
+            if let Some(id) = ht_preview.take() { safe_remove_source(id); }
+            if let Some(id) = st_preview.take() { safe_remove_source(id); }
+
+            let ps = ps_preview.borrow();
+            if ps.smart_view {
+                if let Some(id) = ps.smart_hide_timer.take() { safe_remove_source(id); }
+                ps.dock_win.set_layer(Layer::Top);
+            }
+        });
+        let ps_leave    = Rc::clone(&preview_state);
+        let ht_leave    = Rc::clone(&hide_timer);
+        pv_motion.connect_leave(move |_| {
+            let ps  = Rc::clone(&ps_leave);
+            let ht  = Rc::clone(&ht_leave);
+            let id = glib::timeout_add_local(std::time::Duration::from_millis(350), move || {
+                let mut s = ps.borrow_mut();
+                s.win.hide();
+                s.visible = false;
+                s.active_class = String::new();
+                ht.set(None);
+
+                if s.smart_view {
+                    if let Some(id) = s.smart_hide_timer.take() { safe_remove_source(id); }
+                    let wc = s.dock_win.clone();
+                    let ti = Rc::clone(&s.smart_hide_timer);
+                    let id = glib::timeout_add_local(std::time::Duration::from_millis(s.auto_hide_delay), move || {
+                        wc.set_layer(Layer::Bottom); ti.set(None); glib::ControlFlow::Break
+                    });
+                    s.smart_hide_timer.set(Some(id));
+                }
+
+                glib::ControlFlow::Break
+            });
+            ht_leave.set(Some(id));
+        });
+        preview_win.add_controller(pv_motion);
+        preview_win.set_focusable(false);
 
         drop(cfg);
 
+        // ── Workspace bar ─────────────────────────────────────────────────
+        // Placed after the app icons, separated by a thin divider.
+        let ws_orientation = if dock_position == "left" || dock_position == "right" {
+            Orientation::Vertical
+        } else {
+            Orientation::Horizontal
+        };
+        let workspace_box = Box::builder()
+            .orientation(ws_orientation)
+            .spacing(4)
+            .halign(gtk4::Align::Center)
+            .valign(gtk4::Align::Center)
+            .css_classes(vec!["workspace-bar".to_string()])
+            .build();
+
+        // Create the separator between pinned and running sections.
+        // Both are hidden initially; refresh_workspaces shows them as needed.
+        let ws_separator = gtk4::Separator::new(if ws_orientation == Orientation::Vertical {
+            Orientation::Horizontal
+        } else {
+            Orientation::Vertical
+        });
+        ws_separator.add_css_class("dock-ws-separator");
+        // Append separator + workspace_box to dock container permanently.
+        box_container.append(&ws_separator);
+        box_container.append(&workspace_box);
+        // Start hidden — shown only when non-pinned apps are running.
+        ws_separator.hide();
+        workspace_box.hide();
+
         window.show();
 
-        let dock = Self {
+        Self {
             window,
             detect_window,
             box_container,
+            workspace_box,
+            ws_separator,
             config,
             hyprland: HyprlandHandler::new(),
-            smart_hide_timer,
-        };
-        dock.refresh_with_preview(preview_win, 60, dock_position);
-        dock
+            self_weak: RefCell::new(Weak::new()),
+            active_buttons: RefCell::new(Vec::new()),
+            active_class: RefCell::new(String::new()),
+            preview_state,
+            show_timer,
+            hide_timer,
+        }
+    }
+
+    /// Wire up the self-reference and build the initial contents. Must be called
+    /// once after the `Dock` is wrapped in an `Rc`.
+    pub fn init(self: &Rc<Self>) {
+        *self.self_weak.borrow_mut() = Rc::downgrade(self);
+        self.refresh();
+        self.refresh_workspaces();
     }
 
     pub fn toggle_visibility(&self) {
@@ -300,26 +463,66 @@ impl Dock {
     }
 
     pub fn refresh(&self) {
-        // On hyprland events we can't pass the preview_win — just clear & rebuild
-        // by calling the real method. We keep a stored reference to preview_win
-        // by looking it up via the application window list.
-        let app = self.window.application().expect("no application");
-        let dock_pos = self.config.borrow().position.clone();
-        // Find the dock-preview window among all app windows
-        for win in app.windows() {
-            if win.title().as_deref() == Some("dock-preview") {
-                if let Ok(pw) = win.downcast::<ApplicationWindow>() {
-                    // Recover the edge_margin and dock_position from the existing PreviewState
-                    // by using the dock-preview window's current margins as a fallback of 60px
-                    self.refresh_with_preview(pw, 60, dock_pos);
-                    return;
-                }
+        self.refresh_with_preview();
+        self.refresh_workspaces();
+        // Refresh the focused-app highlight after rebuilding the icons.
+        if let Some(class) = self.hyprland.get_active_class() {
+            *self.active_class.borrow_mut() = class;
+        }
+        let active = self.active_class.borrow().clone();
+        self.apply_active(&active);
+        self.update_exclusive_zone();
+    }
+
+    /// Update which icon is highlighted as the focused app (cheap; no rebuild).
+    /// If the focused app isn't on the dock yet, a new window appeared (the open
+    /// event may have raced), so rebuild to pick it up.
+    pub fn update_active(&self, class: &str) {
+        *self.active_class.borrow_mut() = class.to_string();
+        let known = self.active_buttons
+            .borrow()
+            .iter()
+            .any(|(id, _)| id.eq_ignore_ascii_case(class));
+        if !class.is_empty() && !known {
+            self.refresh();
+        } else {
+            self.apply_active(class);
+        }
+    }
+
+    fn apply_active(&self, class: &str) {
+        for (id, btn) in self.active_buttons.borrow().iter() {
+            if id.eq_ignore_ascii_case(class) {
+                btn.add_css_class("active");
+            } else {
+                btn.remove_css_class("active");
             }
         }
     }
 
-    fn refresh_with_preview(&self, preview_win: ApplicationWindow, edge_margin: i32, dock_position: String) {
-        // Clear existing buttons
+    fn update_exclusive_zone(&self) {
+        let win_clone = self.window.clone();
+        let config_clone = Rc::clone(&self.config);
+        glib::timeout_add_local_once(
+            std::time::Duration::from_millis(50),
+            move || {
+                let cfg = config_clone.borrow();
+                if cfg.exclusive_zone && !cfg.smart_view {
+                    let mut margin = cfg.margin;
+                    if cfg.system_gap_used { margin = HyprlandHandler::new().get_gaps_out(); }
+                    let gaps_out = HyprlandHandler::new().get_gaps_out();
+                    let height = win_clone.height();
+                    let exclusive_size = height + 2 * margin - gaps_out;
+                    win_clone.set_exclusive_zone(exclusive_size.max(0));
+                } else {
+                    win_clone.set_exclusive_zone(-1);
+                }
+            }
+        );
+    }
+
+    fn refresh_with_preview(&self) {
+        self.active_buttons.borrow_mut().clear();
         while let Some(child) = self.box_container.first_child() {
             self.box_container.remove(&child);
         }
@@ -336,114 +539,117 @@ impl Dock {
             self.box_container.append(&launcher_btn);
         }
 
+        // app_counts: instances per class key (lowercase) — used for pinned app indicators.
         let mut app_counts: std::collections::HashMap<String, usize> = Default::default();
-        let mut running_ordered: Vec<AppInfo> = Vec::new();
 
         for client in self.hyprland.get_clients() {
             let class = client.class.clone();
             if class.is_empty() { continue; }
-            let app = AppInfo::find_by_class(&class).unwrap_or_else(|| AppInfo {
-                id: class.clone(),
-                name: if client.title.is_empty() { class.clone() } else { client.title.clone() },
-                icon: Some("application-x-executable".to_string()),
-                exec: "".to_string(),
-            });
-            if !app_counts.contains_key(&app.id) { running_ordered.push(app.clone()); }
-            *app_counts.entry(app.id.clone()).or_insert(0) += 1;
+            let class_key = class.to_lowercase();
+            *app_counts.entry(class_key).or_insert(0) += 1;
         }
 
         let pinned_apps = self.config.borrow().pinned_apps.clone();
 
-        // ── Shared preview state ──────────────────────────────────────────
-        // One PreviewState instance for the whole dock. All buttons share it.
-        let preview_state: Rc<RefCell<PreviewState>> = Rc::new(RefCell::new(PreviewState {
-            win:              preview_win.clone(),
-            active_class:     String::new(),
-            visible:          false,
-            edge_margin,
-            dock_position:    dock_position.clone(),
-            smart_hide_timer: Rc::clone(&self.smart_hide_timer),
-            smart_view:       self.config.borrow().smart_view,
-            auto_hide_delay:  self.config.borrow().auto_hide_delay as u64,
-            dock_win:         self.window.clone(),
-        }));
-        let show_timer: Rc<Cell<Option<glib::SourceId>>> = Rc::new(Cell::new(None));
-        let hide_timer: Rc<Cell<Option<glib::SourceId>>> = Rc::new(Cell::new(None));
-
-        // Add motion controller to the preview window itself so that
-        // moving into the preview cancels the hide timer.
-        let ht_preview  = Rc::clone(&hide_timer);
-        let st_preview  = Rc::clone(&show_timer);
-        let ps_preview  = Rc::clone(&preview_state);
-        let pv_motion   = EventControllerMotion::new();
-        pv_motion.connect_enter(move |_, _, _| {
-            if let Some(id) = ht_preview.take() { id.remove(); }
-            if let Some(id) = st_preview.take() { id.remove(); }
-
-            let ps = ps_preview.borrow();
-            if ps.smart_view {
-                if let Some(id) = ps.smart_hide_timer.take() { id.remove(); }
-                ps.dock_win.set_layer(Layer::Top);
-            }
-        });
-        let ps_leave    = Rc::clone(&preview_state);
-        let ht_leave    = Rc::clone(&hide_timer);
-        pv_motion.connect_leave(move |_| {
-            let ps  = Rc::clone(&ps_leave);
-            let ht  = Rc::clone(&ht_leave);
-            let id = glib::timeout_add_local(std::time::Duration::from_millis(350), move || {
-                let mut s = ps.borrow_mut();
-                s.win.hide();
-                s.visible = false;
-                s.active_class = String::new();
-                ht.set(None);
-
-                if s.smart_view {
-                    if let Some(id) = s.smart_hide_timer.take() { id.remove(); }
-                    let wc = s.dock_win.clone();
-                    let ti = Rc::clone(&s.smart_hide_timer);
-                    let id = glib::timeout_add_local(std::time::Duration::from_millis(s.auto_hide_delay), move || {
-                        wc.set_layer(Layer::Bottom); ti.set(None); glib::ControlFlow::Break
-                    });
-                    s.smart_hide_timer.set(Some(id));
-                }
-
-                glib::ControlFlow::Break
-            });
-            ht_leave.set(Some(id));
-        });
-        preview_win.add_controller(pv_motion);
-        // Ensure preview window does not steal input if possible or handle pointer correctly
-        // Layer-shell windows on Overlay might block if they have input focus.
-        // Try to set it to not focusable.
-        preview_win.set_focusable(false);
+        log::debug!(
+            "refresh: {} clients, {} pinned",
+            app_counts.values().sum::<usize>(),
+            pinned_apps.len()
+        );
 
         for app_id in &pinned_apps {
             if let Some(app) = AppInfo::find_by_id(app_id) {
-                let instances = app_counts.remove(&app.id).unwrap_or(0);
+                // Remove by the class key (lowercase) — that is what app_counts uses.
+                // Try app.id first; if that misses, try the raw app_id lowercased
+                // (covers the case where the .desktop filename differs from the class).
+                let app_id_lower = app_id.to_lowercase();
+                let instances = app_counts
+                    .remove(&app.id)
+                    .or_else(|| app_counts.remove(&app_id_lower))
+                    .unwrap_or(0);
                 self.add_app_button(&app, instances, true,
-                    Rc::clone(&preview_state),
-                    Rc::clone(&show_timer),
-                    Rc::clone(&hide_timer),
+                    Rc::clone(&self.preview_state),
+                    Rc::clone(&self.show_timer),
+                    Rc::clone(&self.hide_timer),
                     Rc::clone(&self.config),
+                    &self.box_container,
                 );
             }
         }
-        for app in running_ordered {
-            if !pinned_apps.contains(&app.id) {
-                if let Some(instances) = app_counts.get(&app.id) {
-                    self.add_app_button(&app, *instances, false,
-                        Rc::clone(&preview_state),
-                        Rc::clone(&show_timer),
-                        Rc::clone(&hide_timer),
-                        Rc::clone(&self.config),
-                    );
-                }
-            }
-        }
+        // Non-pinned running apps are shown in the workspace_box section below.
+        // Do NOT add them here to avoid duplicates.
+
+        self.box_container.append(&self.ws_separator);
+        self.box_container.append(&self.workspace_box);
 
         self.box_container.queue_resize();
         self.window.queue_resize();
+    }
+
+    /// Rebuild the "running apps" section (non-pinned apps in execution)
+    /// shown below the pinned dock icons, like a taskbar.
+    pub fn refresh_workspaces(&self) {
+        // Clear old buttons
+        while let Some(child) = self.workspace_box.first_child() {
+            self.workspace_box.remove(&child);
+        }
+
+        // Gather running apps
+        let mut app_counts: std::collections::HashMap<String, usize> = Default::default();
+        let mut running_ordered: Vec<(String, AppInfo)> = Vec::new();
+        for client in self.hyprland.get_clients() {
+            let class = client.class.clone();
+            if class.is_empty() { continue; }
+            let class_key = class.to_lowercase();
+            let app = AppInfo::find_by_class(&class).unwrap_or_else(|| AppInfo {
+                id: class_key.clone(),
+                name: if client.title.is_empty() { class.clone() } else { client.title.clone() },
+                icon: Some("application-x-executable".to_string()),
+                exec: "".to_string(),
+            });
+            if !app_counts.contains_key(&class_key) {
+                running_ordered.push((class_key.clone(), app));
+            }
+            *app_counts.entry(class_key).or_insert(0) += 1;
+        }
+
+        let pinned_apps = self.config.borrow().pinned_apps.clone();
+        let pinned_lower: std::collections::HashSet<String> =
+            pinned_apps.iter().map(|s| s.to_lowercase()).collect();
+
+        // Collect non-pinned running apps
+        let mut has_running = false;
+        for (class_key, app) in &running_ordered {
+            if pinned_lower.contains(class_key) || pinned_lower.contains(&app.id) {
+                continue;
+            }
+            let instances = match app_counts.get(class_key) {
+                Some(&n) => n,
+                None => continue,
+            };
+
+            self.add_app_button(app, instances, false,
+                Rc::clone(&self.preview_state),
+                Rc::clone(&self.show_timer),
+                Rc::clone(&self.hide_timer),
+                Rc::clone(&self.config),
+                &self.workspace_box,
+            );
+            has_running = true;
+        }
+
+        if has_running {
+            self.ws_separator.show();
+            self.workspace_box.show();
+        } else {
+            self.ws_separator.hide();
+            self.workspace_box.hide();
+        }
+
+        self.workspace_box.queue_resize();
+        self.box_container.queue_resize();
+        self.window.queue_resize();
+        self.update_exclusive_zone();
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -456,6 +662,7 @@ impl Dock {
         show_timer:   Rc<Cell<Option<glib::SourceId>>>,
         hide_timer:   Rc<Cell<Option<glib::SourceId>>>,
         config:       Rc<RefCell<Config>>,
+        container:    &Box,
     ) {
         let btn = Button::builder()
             .css_classes(vec![if pinned { "pinned" } else { "running" }.to_string()])
@@ -469,12 +676,19 @@ impl Dock {
         } else {
             vbox.append(&Label::new(Some(&app.name)));
         }
-        if instances > 0 {
-            vbox.append(&Label::builder()
-                .label(&"•".repeat(instances.min(5)))
-                .css_classes(vec!["indicator".to_string()])
-                .build());
+        let badge = if instances > 0 {
+            "•".repeat(instances.min(3))
+        } else {
+            "•".to_string()
+        };
+        let indicator = Label::builder()
+            .label(&badge)
+            .css_classes(vec!["indicator".to_string()])
+            .build();
+        if instances == 0 {
+            indicator.set_opacity(0.0);
         }
+        vbox.append(&indicator);
         btn.set_child(Some(&vbox));
         btn.set_tooltip_text(Some(&app.name));
 
@@ -494,8 +708,7 @@ impl Dock {
             let config_e = Rc::clone(&config);
 
             motion.connect_enter(move |_, _, _| {
-                // Always cancel a pending hide
-                if let Some(id) = ht_e.take() { id.remove(); }
+                if let Some(id) = ht_e.take() { safe_remove_source(id); }
 
                 let state_visible;
                 let state_class;
@@ -507,27 +720,27 @@ impl Dock {
 
                 if state_visible {
                     if state_class == class_e {
-                        return; // same app, nothing to do
+                        return;
                     }
-                    // Different app: fast transition without hide/show cycle
-                    if let Some(id) = st_e.take() { id.remove(); }
+                    if let Some(id) = st_e.take() { safe_remove_source(id); }
 
                     let ps  = Rc::clone(&ps_e);
                     let cls = class_e.clone();
                     let icn = icon_e.clone();
                     let btn = btn_e.clone();
                     let cfg_c = Rc::clone(&config_e);
+                    let st_c = Rc::clone(&st_e);
                     let id = glib::timeout_add_local(
                         std::time::Duration::from_millis(move_delay),
                         move || {
+                            st_c.set(None);
                             update_preview_content(&ps, &cls, &icn, &btn, &cfg_c.borrow());
                             glib::ControlFlow::Break
                         }
                     );
                     st_e.set(Some(id));
                 } else {
-                    // Not visible: schedule show after show_delay
-                    if st_e.borrow_peek() { return; } // already pending
+                    if st_e.borrow_peek() { return; }
 
                     let ps    = Rc::clone(&ps_e);
                     let cls   = class_e.clone();
@@ -559,7 +772,7 @@ impl Dock {
             let ht_l  = Rc::clone(&hide_timer);
 
             motion.connect_leave(move |_| {
-                if let Some(id) = st_l.take() { id.remove(); }
+                if let Some(id) = st_l.take() { safe_remove_source(id); }
 
                 let visible = ps_l.borrow().visible;
                 if !visible { return; }
@@ -569,11 +782,11 @@ impl Dock {
                 let id = glib::timeout_add_local(
                     std::time::Duration::from_millis(hide_delay),
                     move || {
+                        ht.set(None);
                         let mut s = ps.borrow_mut();
                         s.win.hide();
                         s.visible = false;
                         s.active_class = String::new();
-                        ht.set(None);
                         glib::ControlFlow::Break
                     }
                 );
@@ -586,70 +799,112 @@ impl Dock {
         {
             let menu_pop = gtk4::Popover::builder()
                 .position(gtk4::PositionType::Top)
-                .has_arrow(true)
+                .has_arrow(false)
                 .build();
             menu_pop.add_css_class("context-popover");
             menu_pop.set_parent(&btn);
+            // Lift the menu a little higher above the icon.
+            menu_pop.set_offset(0, -8);
 
             let mp_d = menu_pop.clone();
             btn.connect_destroy(move |_| { mp_d.unparent(); });
 
+            let menu_box = Box::builder()
+                .orientation(Orientation::Vertical)
+                .spacing(0)
+                .build();
+
             let app_id_m    = app.id.clone();
             let app_class_m = app.id.clone();
+            let app_exec_m  = app.exec.clone();
             let config_m    = Rc::clone(&config);
             let ps_m        = Rc::clone(&preview_state);
             let st_m        = Rc::clone(&show_timer);
             let ht_m        = Rc::clone(&hide_timer);
 
-            menu_pop.connect_show(move |pop| {
-                // Hide preview when context menu opens
-                if let Some(id) = st_m.take() { id.remove(); }
-                if let Some(id) = ht_m.take() { id.remove(); }
+            // ── Header: app icon + name ──────────────────────────────────
+            let header = Box::builder()
+                .orientation(Orientation::Horizontal)
+                .spacing(10)
+                .css_classes(vec!["ctx-header".to_string()])
+                .build();
+            let header_icon = Image::from_icon_name(
+                app.icon.as_deref().unwrap_or("application-x-executable"),
+            );
+            header_icon.set_pixel_size(18);
+            header.append(&header_icon);
+            let header_label = Label::builder()
+                .label(&app.name)
+                .xalign(0.0)
+                .halign(Align::Start)
+                .hexpand(true)
+                .max_width_chars(22)
+                .ellipsize(gtk4::pango::EllipsizeMode::End)
+                .css_classes(vec!["ctx-header-label".to_string()])
+                .build();
+            header.append(&header_label);
+            menu_box.append(&header);
+            menu_box.append(&gtk4::Separator::new(Orientation::Horizontal));
+
+            // ── New window ───────────────────────────────────────────────
+            let new_win_item = ctx_menu_item("list-add-symbolic", "New window", false);
+            let exec = app_exec_m.clone();
+            new_win_item.connect_clicked(move |_| {
+                if !exec.is_empty() {
+                    let _ = std::process::Command::new("sh").arg("-c").arg(&exec).spawn();
+                }
+            });
+            menu_box.append(&new_win_item);
+
+            // ── Pin / Unpin ─────────────────────────────────────────────
+            let pin_txt = if pinned { "Unpin from taskbar" } else { "Pin to taskbar" };
+            let pin_item = ctx_menu_item("view-pin-symbolic", pin_txt, false);
+            let cfg_c = Rc::clone(&config_m);
+            let id_c  = app_id_m.clone();
+            let pop_r = menu_pop.clone();
+            let dock_weak = self.self_weak.borrow().clone();
+            pin_item.connect_clicked(move |_| {
+                {
+                    let mut c = cfg_c.borrow_mut();
+                    if pinned { c.unpin_app(&id_c); } else { c.pin_app(&id_c); }
+                }
+                pop_r.popdown();
+                // Rebuild the dock after the click finishes so the icon
+                // appears/disappears immediately, without destroying the button
+                // mid-signal.
+                let dw = dock_weak.clone();
+                glib::idle_add_local_once(move || {
+                    if let Some(dock) = dw.upgrade() { dock.refresh(); }
+                });
+            });
+            menu_box.append(&pin_item);
+
+            // ── Close all windows ──────────────────────────────────────
+            if instances > 0 {
+                menu_box.append(&gtk4::Separator::new(Orientation::Horizontal));
+                let close_item = ctx_menu_item("window-close-symbolic", "Close all windows", true);
+                let class_c = app_class_m.clone();
+                let pop_r2  = menu_pop.clone();
+                close_item.connect_clicked(move |_| {
+                    let _ = std::process::Command::new("hyprctl")
+                        .args(["dispatch", "closewindow", &format!("^{}$", class_c)])
+                        .spawn();
+                    pop_r2.popdown();
+                });
+                menu_box.append(&close_item);
+            }
+
+            menu_pop.set_child(Some(&menu_box));
+
+            menu_pop.connect_show(move |_| {
+                if let Some(id) = st_m.take() { safe_remove_source(id); }
+                if let Some(id) = ht_m.take() { safe_remove_source(id); }
                 {
                     let mut s = ps_m.borrow_mut();
                     s.win.hide();
                     s.visible = false;
                     s.active_class = String::new();
                 }
-
-                if let Some(old) = pop.child() { drop(old); pop.set_child(gtk4::Widget::NONE); }
-
-                let row = Box::builder()
-                    .orientation(Orientation::Horizontal)
-                    .spacing(6)
-                    .margin_top(6).margin_bottom(6)
-                    .margin_start(8).margin_end(8)
-                    .build();
-
-                let pin_lbl = if pinned { "⊘  Unpin" } else { "📌  Pin" };
-                let pin_btn = Button::builder().label(pin_lbl)
-                    .css_classes(vec!["pop-action-btn".to_string()]).build();
-                let cfg_c = Rc::clone(&config_m);
-                let id_c  = app_id_m.clone();
-                let pop_r = pop.clone();
-                pin_btn.connect_clicked(move |_| {
-                    let mut c = cfg_c.borrow_mut();
-                    if pinned { c.unpin_app(&id_c); } else { c.pin_app(&id_c); }
-                    pop_r.popdown();
-                });
-                row.append(&pin_btn);
-
-                if instances > 0 {
-                    row.append(&gtk4::Separator::new(Orientation::Vertical));
-                    let close_btn = Button::builder().label("✕  Close All")
-                        .css_classes(vec!["pop-action-btn".to_string(), "pop-close-btn".to_string()])
-                        .build();
-                    let class_c = app_class_m.clone();
-                    let pop_r2  = pop.clone();
-                    close_btn.connect_clicked(move |_| {
-                        let _ = std::process::Command::new("hyprctl")
-                            .args(["dispatch", "closewindow", &format!("^{}$", class_c)])
-                            .spawn();
-                        pop_r2.popdown();
-                    });
-                    row.append(&close_btn);
-                }
-                pop.set_child(Some(&row));
             });
 
             let rclick   = gtk4::GestureClick::new();
@@ -659,222 +914,108 @@ impl Dock {
             btn.add_controller(rclick);
         }
 
+        // ── Left-click: focus existing windows (cycling) or launch ───────
         let app_clone = app.clone();
-        btn.connect_clicked(move |_| { app_clone.launch(); });
+        btn.connect_clicked(move |_| { focus_or_launch(&app_clone); });
 
-        self.box_container.append(&btn);
+        // ── Drag & drop to reorder pinned apps ───────────────────────────
+        if pinned {
+            let drag = gtk4::DragSource::new();
+            drag.set_actions(gtk4::gdk::DragAction::MOVE);
+            let drag_id = app.id.clone();
+            drag.connect_prepare(move |_, _, _| {
+                Some(gtk4::gdk::ContentProvider::for_value(&drag_id.to_value()))
+            });
+            btn.add_controller(drag);
+
+            let drop = gtk4::DropTarget::new(glib::Type::STRING, gtk4::gdk::DragAction::MOVE);
+            let target_id = app.id.clone();
+            let cfg_drop = Rc::clone(&config);
+            let dock_weak = self.self_weak.borrow().clone();
+            drop.connect_drop(move |_, value, _, _| {
+                if let Ok(dragged) = value.get::<String>() {
+                    {
+                        let mut c = cfg_drop.borrow_mut();
+                        c.reorder_pinned(&dragged, &target_id);
+                    }
+                    let dw = dock_weak.clone();
+                    glib::idle_add_local_once(move || {
+                        if let Some(dock) = dw.upgrade() { dock.refresh(); }
+                    });
+                    return true;
+                }
+                false
+            });
+            btn.add_controller(drop);
+        }
+
+        self.active_buttons.borrow_mut().push((app.id.clone(), btn.clone()));
+        container.append(&btn);
     }
+}
+
+thread_local! {
+    /// Per-app index so repeated clicks cycle through the app's open windows.
+    static CYCLE_IDX: RefCell<std::collections::HashMap<String, usize>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+/// Focus an existing window of the app (cycling through them on repeated clicks);
+/// if none are open, launch a new instance.
+fn focus_or_launch(app: &AppInfo) {
+    let handler = HyprlandHandler::new();
+    let windows = handler.get_clients_for_class(&app.id);
+    if windows.is_empty() {
+        app.launch();
+        return;
+    }
+    let idx = CYCLE_IDX.with(|m| {
+        let mut m = m.borrow_mut();
+        let entry = m.entry(app.id.clone()).or_insert(0);
+        let cur = *entry % windows.len();
+        *entry = (*entry + 1) % windows.len();
+        cur
+    });
+    let addr = windows[idx].address.clone();
+    let _ = std::process::Command::new("hyprctl")
+        .args(["dispatch", "focuswindow", &format!("address:{}", addr)])
+        .spawn();
 }
 
 // ── Preview window content management ───────────────────────────────────────
 
-/// Build/update the preview window content for `class`, then show the window.
-/// The window is never destroyed — we just swap its child widget.
-/// Build/update the preview window content for `class`, then show the window.
-/// The window is never destroyed — we just swap its child widget.
-fn update_preview_content(
-    ps:    &Rc<RefCell<PreviewState>>,
-    class: &str,
-    icon:  &Option<String>,
-    btn:   &Button,
-    config: &Config,
-) {
-    let handler = HyprlandHandler::new();
-    let windows = handler.get_clients_for_class(class);
-    if windows.is_empty() { return; }
+/// Build a single context-menu entry: a leading symbolic icon + left-aligned
+/// label inside a flat button, matching `.ctx-menu-item`. `close_style` adds the
+/// red close accent.
+fn ctx_menu_item(icon_name: &str, label: &str, close_style: bool) -> Button {
+    let row = Box::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(10)
+        .build();
 
-    let dock_pos = ps.borrow().dock_position.clone();
-    let content = build_preview_content(&windows, icon, &dock_pos);
+    let icon = Image::from_icon_name(icon_name);
+    icon.set_pixel_size(15);
+    icon.add_css_class("ctx-menu-icon");
+    row.append(&icon);
 
-    // Position the preview window near the button.
-    let (bx, by, bw, bh) = get_button_monitor_pos(btn, &dock_pos, config);
+    let lbl = Label::builder()
+        .label(label)
+        .xalign(0.0)
+        .halign(Align::Start)
+        .hexpand(true)
+        .build();
+    row.append(&lbl);
 
-    {
-        let mut s = ps.borrow_mut();
-        s.win.set_child(Some(&content));
-        s.active_class = class.to_string();
-
-        let mut toplevel = btn.clone().upcast::<gtk4::Widget>();
-        while let Some(parent) = toplevel.parent() {
-            toplevel = parent;
-        }
-        if let Ok(app_win) = toplevel.downcast::<ApplicationWindow>() {
-            let display = app_win.upcast_ref::<gtk4::Widget>().display();
-            let monitor = if let Some(surface) = app_win.surface() {
-                display.monitor_at_surface(&surface)
-            } else {
-                None
-            };
-            if let Some(ref m) = monitor {
-                s.win.set_monitor(Some(m));
-            }
-
-            let monitor = monitor.unwrap_or_else(|| {
-                display.monitors().item(0)
-                    .and_then(|m| m.downcast::<gtk4::gdk::Monitor>().ok())
-                    .expect("no monitor found")
-            });
-            let geo = monitor.geometry();
-            let monitor_w = geo.width();
-            let monitor_h = geo.height();
-            let alloc = app_win.allocation();
-            let dock_w = alloc.width();
-            let dock_h = alloc.height();
-
-            // Reset all margins first to prevent residual margins from different layouts
-            s.win.set_margin(Edge::Left, 0);
-            s.win.set_margin(Edge::Right, 0);
-            s.win.set_margin(Edge::Top, 0);
-            s.win.set_margin(Edge::Bottom, 0);
-
-            match dock_pos.as_str() {
-                "left" => {
-                    let card_h = 130_i32; // Vertical preview height per card
-                    let preview_h = (windows.len() as i32) * card_h + 16;
-                    let top_margin = (by + bh / 2 - preview_h / 2).max(0);
-                    s.win.set_margin(Edge::Top, top_margin);
-                    
-                    let left_margin = bx + dock_w + 5;
-                    s.win.set_margin(Edge::Left, left_margin);
-                }
-                "right" => {
-                    let card_h = 130_i32;
-                    let preview_h = (windows.len() as i32) * card_h + 16;
-                    let top_margin = (by + bh / 2 - preview_h / 2).max(0);
-                    s.win.set_margin(Edge::Top, top_margin);
-                    
-                    let right_margin = monitor_w - bx + 5;
-                    s.win.set_margin(Edge::Right, right_margin);
-                }
-                "top" => {
-                    let card_w = 180_i32;
-                    let preview_w = (windows.len() as i32) * card_w + 16;
-                    let left_margin = (bx + bw / 2 - preview_w / 2).max(0);
-                    s.win.set_margin(Edge::Left, left_margin);
-                    
-                    let top_margin = by + dock_h + 5;
-                    s.win.set_margin(Edge::Top, top_margin);
-                }
-                _ => { // "bottom"
-                    let card_w = 180_i32;
-                    let preview_w = (windows.len() as i32) * card_w + 16;
-                    let left_margin = (bx + bw / 2 - preview_w / 2).max(0);
-                    s.win.set_margin(Edge::Left, left_margin);
-                    
-                    let bottom_margin = monitor_h - by + 5;
-                    s.win.set_margin(Edge::Bottom, bottom_margin);
-                }
-            }
-        }
-
-        if !s.visible {
-            s.win.show();
-            s.visible = true;
-        }
-    }
-
-    // Kick off async screenshot capture
-    let sp = Rc::clone(ps);
-    spawn_screenshot_updates(windows, sp, content);
+    let mut classes = vec!["ctx-menu-item".to_string()];
+    if close_style { classes.push("ctx-close-item".to_string()); }
+    Button::builder()
+        .hexpand(true)
+        .css_classes(classes)
+        .child(&row)
+        .build()
 }
 
-/// Get the monitor-relative X, Y, W, H of a button widget.
-fn get_button_monitor_pos(btn: &Button, dock_pos: &str, config: &Config) -> (i32, i32, i32, i32) {
-    let mut toplevel = btn.clone().upcast::<gtk4::Widget>();
-    // Check if the button itself is not null and has a parent
-    while let Some(parent) = toplevel.parent() {
-        toplevel = parent;
-    }
-    
-    let app_win = match toplevel.downcast::<ApplicationWindow>() {
-        Ok(w) => w,
-        Err(_) => {
-            println!("[DEBUG] Failed to find ApplicationWindow for button");
-            return (0, 0, 64, 64);
-        }
-    };
-
-    let display = app_win.upcast_ref::<gtk4::Widget>().display();
-    let monitor = if let Some(surface) = app_win.surface() {
-        display.monitor_at_surface(&surface).unwrap_or_else(|| {
-            display.monitors().item(0)
-                .and_then(|m| m.downcast::<gtk4::gdk::Monitor>().ok())
-                .expect("no monitor found")
-        })
-    } else {
-        display.monitors().item(0)
-            .and_then(|m| m.downcast::<gtk4::gdk::Monitor>().ok())
-            .expect("no monitor found")
-    };
-
-    let geo = monitor.geometry();
-    let monitor_w = geo.width();
-    let monitor_h = geo.height();
-
-    let alloc = app_win.allocation();
-    let dock_w = alloc.width();
-    let dock_h = alloc.height();
-
-    let mut margin = config.margin;
-    if config.system_gap_used {
-        margin = HyprlandHandler::new().get_gaps_out();
-    }
-    let margin_bottom = config.margin_bottom + margin;
-    let margin_top = config.margin_top + margin;
-    let margin_left = config.margin_left + margin;
-    let margin_right = config.margin_right + margin;
-
-    let (tx, ty) = match dock_pos {
-        "top" => {
-            let x = if config.full_screen {
-                margin_left
-            } else {
-                (monitor_w - dock_w) / 2
-            };
-            let y = margin_top;
-            (x, y)
-        }
-        "left" => {
-            let x = margin_left;
-            let y = if config.full_screen {
-                margin_top
-            } else {
-                (monitor_h - dock_h) / 2
-            };
-            (x, y)
-        }
-        "right" => {
-            let x = monitor_w - margin_right - dock_w;
-            let y = if config.full_screen {
-                margin_top
-            } else {
-                (monitor_h - dock_h) / 2
-            };
-            (x, y)
-        }
-        _ => { // "bottom"
-            let x = if config.full_screen {
-                margin_left
-            } else {
-                (monitor_w - dock_w) / 2
-            };
-            let y = monitor_h - margin_bottom - dock_h;
-            (x, y)
-        }
-    };
-
-    let (wx, wy) = btn.translate_coordinates(&app_win, 0.0, 0.0)
-        .unwrap_or((0.0, 0.0));
-    let btn_alloc = btn.allocation();
-
-    (
-        tx + wx as i32,
-        ty + wy as i32,
-        btn_alloc.width(),
-        btn_alloc.height(),
-    )
-}
-
+/// Build a row of preview cards for all windows of one app class.
 fn build_preview_content(
     windows: &[HyprClient],
     icon:    &Option<String>,
@@ -887,8 +1028,6 @@ fn build_preview_content(
     let cards_row = Box::builder()
         .orientation(orientation)
         .spacing(8)
-        .margin_top(8).margin_bottom(8)
-        .margin_start(8).margin_end(8)
         .css_classes(vec!["preview-row".to_string()])
         .build();
 
@@ -898,54 +1037,60 @@ fn build_preview_content(
             .spacing(0)
             .css_classes(vec!["win-card".to_string()])
             .build();
-        card.set_size_request(164, -1);
 
-        // Title bar
-        let title_bar = Box::builder()
+        // ── Title row: icon + title + close ──────────────────────────────
+        let title_row = Box::builder()
             .orientation(Orientation::Horizontal)
             .spacing(4)
-            .margin_top(5).margin_bottom(3)
-            .margin_start(7).margin_end(5)
             .build();
 
-        let title_str = if win.title.chars().count() > 22 {
-            format!("{}…", win.title.chars().take(22).collect::<String>())
+        let app_icon = Image::from_icon_name(icon.as_deref().unwrap_or("application-x-executable"));
+        app_icon.set_pixel_size(14);
+        title_row.append(&app_icon);
+
+        let title_str = if win.title.chars().count() > 30 {
+            format!("{}…", win.title.chars().take(30).collect::<String>())
         } else { win.title.clone() };
-
-        title_bar.append(&Label::builder()
+        let title_lbl = Label::builder()
             .label(&title_str)
-            .hexpand(true).xalign(0.0)
+            .hexpand(true)
+            .xalign(0.0)
             .css_classes(vec!["win-title".to_string()])
-            .build());
+            .build();
+        title_row.append(&title_lbl);
 
-        let close_x = Button::builder().label("×")
-            .css_classes(vec!["win-close-btn".to_string()]).build();
+        let close_x = Button::builder()
+            .label("×")
+            .css_classes(vec!["win-close-btn".to_string()])
+            .build();
         let addr_close = win.address.clone();
         close_x.connect_clicked(move |_| {
             let _ = std::process::Command::new("hyprctl")
                 .args(["dispatch", "closewindow", &format!("address:{}", addr_close)])
                 .spawn();
         });
-        title_bar.append(&close_x);
-        card.append(&title_bar);
+        title_row.append(&close_x);
 
-        // Thumbnail area (icon placeholder, replaced by screenshot)
+        card.append(&title_row);
+
+        // ── Thumbnail area ───────────────────────────────────────────────
         let thumb = Box::builder()
             .orientation(Orientation::Vertical)
-            .halign(gtk4::Align::Center)
-            .valign(gtk4::Align::Center)
+            .halign(Align::Fill)
+            .valign(Align::Fill)
             .css_classes(vec!["win-thumb-box".to_string()])
             .build();
-        thumb.set_size_request(156, 88);
+        thumb.set_size_request(200, 120);
 
         let ico = Image::from_icon_name(icon.as_deref().unwrap_or("application-x-executable"));
-        ico.set_pixel_size(48);
-        ico.set_halign(gtk4::Align::Center);
-        ico.set_valign(gtk4::Align::Center);
+        ico.set_pixel_size(56);
+        ico.set_halign(Align::Center);
+        ico.set_valign(Align::Center);
         ico.set_hexpand(true);
         ico.set_vexpand(true);
         ico.add_css_class("preview-placeholder");
         thumb.append(&ico);
+
         card.append(&thumb);
 
         // Focus on click
@@ -964,80 +1109,225 @@ fn build_preview_content(
     cards_row
 }
 
-/// Capture screenshots asynchronously and fill in thumbnails.
+fn update_preview_content(
+    ps:    &Rc<RefCell<PreviewState>>,
+    class: &str,
+    icon:  &Option<String>,
+    btn:   &Button,
+    config: &Config,
+) {
+    let handler = HyprlandHandler::new();
+    let windows = handler.get_clients_for_class(class);
+    if windows.is_empty() { return; }
+
+    let dock_pos = ps.borrow().dock_position.clone();
+    let content = build_preview_content(&windows, icon, &dock_pos);
+
+    let mut s = ps.borrow_mut();
+
+    let mut toplevel = btn.clone().upcast::<gtk4::Widget>();
+    while let Some(parent) = toplevel.parent() { toplevel = parent; }
+    let Ok(app_win) = toplevel.downcast::<ApplicationWindow>() else { return; };
+
+    let display = app_win.upcast_ref::<gtk4::Widget>().display();
+    let monitor = app_win.surface()
+        .and_then(|s| display.monitor_at_surface(&s))
+        .or_else(|| {
+            display.monitors().item(0)
+                .and_then(|m| m.downcast::<gtk4::gdk::Monitor>().ok())
+        });
+    let Some(monitor) = monitor else { return; };
+
+    s.win.set_child(Some(&content));
+    s.active_class = class.to_string();
+
+    let geo = monitor.geometry();
+    let monitor_w = geo.width();
+    let monitor_h = geo.height();
+    let alloc = app_win.allocation();
+    let dock_w = alloc.width();
+    let dock_h = alloc.height();
+
+    // Calculate button position on screen
+    let (bx, by, bw, bh) = get_button_monitor_pos(btn, &dock_pos, config);
+
+    // Reset margins
+    s.win.set_margin(Edge::Left, 0);
+    s.win.set_margin(Edge::Right, 0);
+    s.win.set_margin(Edge::Top, 0);
+    s.win.set_margin(Edge::Bottom, 0);
+
+    let n = windows.len() as i32;
+
+    // Real card footprint (thumb 200x120 + .win-card padding 6px) plus the
+    // .preview-row panel padding (8px) and the 8px spacing between cards.
+    // Used to center the panel under the button and keep it on-screen.
+    const CARD_W: i32 = 212;   // 200 + 2*6
+    const CARD_H: i32 = 168;   // title row (~28) + thumb 120 + 2*6 padding
+    const PANEL_PAD: i32 = 8;
+    const CARD_GAP: i32 = 8;
+
+    let mut margin_val = config.margin;
+    if config.system_gap_used { margin_val = HyprlandHandler::new().get_gaps_out(); }
+    let margin_bottom = config.margin_bottom + margin_val;
+    let margin_top = config.margin_top + margin_val;
+    let margin_left = config.margin_left + margin_val;
+    let margin_right = config.margin_right + margin_val;
+
+    match dock_pos.as_str() {
+        "left" => {
+            let panel_h = n * CARD_H + (n - 1).max(0) * CARD_GAP + 2 * PANEL_PAD;
+            let max_top = (monitor_h - panel_h).max(0);
+            let top_margin = (by + bh / 2 - panel_h / 2).clamp(0, max_top);
+            s.win.set_margin(Edge::Top, top_margin);
+            s.win.set_margin(Edge::Left, margin_left + dock_w + 6);
+        }
+        "right" => {
+            let panel_h = n * CARD_H + (n - 1).max(0) * CARD_GAP + 2 * PANEL_PAD;
+            let max_top = (monitor_h - panel_h).max(0);
+            let top_margin = (by + bh / 2 - panel_h / 2).clamp(0, max_top);
+            s.win.set_margin(Edge::Top, top_margin);
+            s.win.set_margin(Edge::Right, margin_right + dock_w + 6);
+        }
+        "top" => {
+            let panel_w = n * CARD_W + (n - 1).max(0) * CARD_GAP + 2 * PANEL_PAD;
+            let max_left = (monitor_w - panel_w).max(0);
+            let left_margin = (bx + bw / 2 - panel_w / 2).clamp(0, max_left);
+            s.win.set_margin(Edge::Left, left_margin);
+            s.win.set_margin(Edge::Top, margin_top + dock_h + 6);
+        }
+        _ => {
+            let panel_w = n * CARD_W + (n - 1).max(0) * CARD_GAP + 2 * PANEL_PAD;
+            let max_left = (monitor_w - panel_w).max(0);
+            let left_margin = (bx + bw / 2 - panel_w / 2).clamp(0, max_left);
+            s.win.set_margin(Edge::Left, left_margin);
+            s.win.set_margin(Edge::Bottom, margin_bottom + dock_h + 6);
+        }
+    }
+
+    s.win.set_monitor(Some(&monitor));
+
+    if !s.visible {
+        s.win.show();
+        s.visible = true;
+    }
+    drop(s);
+
+    spawn_screenshot_updates(windows, Rc::clone(ps), content);
+}
+
+/// Get the monitor-relative X, Y, W, H of a button widget.
+fn get_button_monitor_pos(btn: &Button, dock_pos: &str, config: &Config) -> (i32, i32, i32, i32) {
+    let mut toplevel = btn.clone().upcast::<gtk4::Widget>();
+    while let Some(parent) = toplevel.parent() { toplevel = parent; }
+    let app_win = match toplevel.downcast::<ApplicationWindow>() {
+        Ok(w) => w,
+        Err(_) => return (0, 0, 64, 64),
+    };
+
+    let display = app_win.upcast_ref::<gtk4::Widget>().display();
+    let monitor = app_win.surface()
+        .and_then(|s| display.monitor_at_surface(&s))
+        .or_else(|| {
+            display.monitors().item(0)
+                .and_then(|m| m.downcast::<gtk4::gdk::Monitor>().ok())
+        });
+    let monitor = match monitor {
+        Some(m) => m,
+        None => return (0, 0, 64, 64),
+    };
+    let geo = monitor.geometry();
+    let monitor_w = geo.width();
+    let monitor_h = geo.height();
+    let alloc = app_win.allocation();
+    let dock_w = alloc.width();
+    let dock_h = alloc.height();
+
+    let mut margin = config.margin;
+    if config.system_gap_used { margin = HyprlandHandler::new().get_gaps_out(); }
+    let margin_bottom = config.margin_bottom + margin;
+    let margin_top = config.margin_top + margin;
+    let margin_left = config.margin_left + margin;
+    let margin_right = config.margin_right + margin;
+
+    let (tx, ty) = match dock_pos {
+        "top" => {
+            let x = if config.full_screen { margin_left } else { (monitor_w - dock_w) / 2 };
+            (x, margin_top)
+        }
+        "left" => {
+            let y = if config.full_screen { margin_top } else { (monitor_h - dock_h) / 2 };
+            (margin_left, y)
+        }
+        "right" => {
+            let y = if config.full_screen { margin_top } else { (monitor_h - dock_h) / 2 };
+            (monitor_w - margin_right - dock_w, y)
+        }
+        _ => {
+            let x = if config.full_screen { margin_left } else { (monitor_w - dock_w) / 2 };
+            (x, monitor_h - margin_bottom - dock_h)
+        }
+    };
+
+    let (wx, wy) = btn.translate_coordinates(&app_win, 0.0, 0.0).unwrap_or((0.0, 0.0));
+    let btn_alloc = btn.allocation();
+    (tx + wx as i32, ty + wy as i32, btn_alloc.width(), btn_alloc.height())
+}
+
+/// Continuously capture screenshots while the preview is visible (live preview).
+/// One capture is taken immediately when the preview opens, then refreshed at a
+/// low rate so we don't spawn dozens of `grim` subprocesses per second.
 fn spawn_screenshot_updates(
     windows:       Vec<HyprClient>,
     preview_state: Rc<RefCell<PreviewState>>,
     content:       Box,
 ) {
+    let windows = Rc::new(windows);
     let (tx, rx) = mpsc::channel::<(usize, String)>();
-
-    for (idx, win) in windows.iter().enumerate() {
-        let tx2  = tx.clone();
-        let addr = win.address.clone();
-        let at   = win.at;
-        let size = win.size;
-        std::thread::spawn(move || {
-            if let Some(path) = capture_window_screenshot(&addr, at, size) {
-                let _ = tx2.send((idx, path));
-            }
-        });
-    }
-    drop(tx);
-
     let rx = Rc::new(RefCell::new(rx));
     let content_ptr = content.clone();
+    let pending = Arc::new(std::sync::Mutex::new(vec![false; windows.len()]));
 
-    glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
-        let win = {
-            let s = preview_state.borrow();
-            if !s.visible { return glib::ControlFlow::Break; }
-            
-            // If the window child has changed, this update loop is stale
-            if let Some(child) = s.win.child() {
-                if child != content_ptr.clone().upcast::<gtk4::Widget>() {
-                    return glib::ControlFlow::Break;
-                }
-            } else {
+    // Kick off the first capture pass right away so thumbnails appear quickly.
+    spawn_pending_captures(&windows, &tx, &pending);
+
+    glib::timeout_add_local(std::time::Duration::from_millis(750), move || {
+        let s = preview_state.borrow();
+        if !s.visible { return glib::ControlFlow::Break; }
+        if let Some(child) = s.win.child() {
+            if child != content_ptr.clone().upcast::<gtk4::Widget>() {
                 return glib::ControlFlow::Break;
             }
-
-            s.win.clone()
-        };
+        } else {
+            return glib::ControlFlow::Break;
+        }
+        drop(s);
 
         loop {
             match rx.borrow().try_recv() {
                 Ok((idx, path)) => {
-                    // cards_row → card[idx] → title_bar(0), thumb_box(1)
                     let mut card_w = content_ptr.first_child();
                     let mut i = 0;
                     while let Some(w) = card_w {
                         if i == idx {
                             if let Ok(card) = w.downcast::<Box>() {
-                                let mut child = card.first_child();
-                                let mut count = 0;
-                                while let Some(c) = child {
-                                    if count == 1 {
-                                        if let Ok(thumb) = c.clone().downcast::<Box>() {
-                                            if let Some(old) = thumb.first_child() {
-                                                thumb.remove(&old);
-                                            }
-                                            let f = gio::File::for_path(&path);
-                                            if let Ok(tex) = gtk4::gdk::Texture::from_file(&f) {
-                                                let pic = gtk4::Picture::for_paintable(&tex);
-                                                pic.set_size_request(156, 88);
-                                                pic.set_halign(gtk4::Align::Fill);
-                                                pic.set_valign(gtk4::Align::Fill);
-                                                pic.set_hexpand(true);
-                                                pic.set_vexpand(true);
-                                                pic.add_css_class("win-thumbnail");
-                                                thumb.append(&pic);
-                                            }
+                                if let Some(thumb_widget) = card.first_child()
+                                    .and_then(|c| c.next_sibling())
+                                {
+                                    if let Ok(thumb) = thumb_widget.downcast::<Box>() {
+                                        if let Some(old) = thumb.first_child() { thumb.remove(&old); }
+                                        let f = gio::File::for_path(&path);
+                                        if let Ok(tex) = gtk4::gdk::Texture::from_file(&f) {
+                                            let pic = gtk4::Picture::for_paintable(&tex);
+                                            pic.set_halign(Align::Fill);
+                                            pic.set_valign(Align::Fill);
+                                            pic.set_hexpand(true);
+                                            pic.set_vexpand(true);
+                                            pic.set_keep_aspect_ratio(true);
+                                            pic.add_css_class("win-thumbnail");
+                                            thumb.append(&pic);
                                         }
-                                        break;
                                     }
-                                    count += 1;
-                                    child = c.next_sibling();
                                 }
                             }
                             break;
@@ -1046,12 +1336,41 @@ fn spawn_screenshot_updates(
                         card_w = w.next_sibling();
                     }
                 }
-                Err(mpsc::TryRecvError::Empty)        => break,
+                Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => return glib::ControlFlow::Break,
             }
         }
+
+        spawn_pending_captures(&windows, &tx, &pending);
+
         glib::ControlFlow::Continue
     });
+}
+
+/// Spawn one background `grim` capture per window that isn't already being captured.
+fn spawn_pending_captures(
+    windows: &Rc<Vec<HyprClient>>,
+    tx:      &mpsc::Sender<(usize, String)>,
+    pending: &Arc<std::sync::Mutex<Vec<bool>>>,
+) {
+    let mut pend = pending.lock().unwrap();
+    for (idx, win) in windows.iter().enumerate() {
+        if !pend[idx] {
+            pend[idx] = true;
+            let tx2 = tx.clone();
+            let addr = win.address.clone();
+            let sid = win.stable_id.clone();
+            let at = win.at;
+            let size = win.size;
+            let pend2 = Arc::clone(pending);
+            std::thread::spawn(move || {
+                if let Some(path) = capture_window_screenshot(&addr, &sid, at, size) {
+                    let _ = tx2.send((idx, path));
+                }
+                if let Ok(mut p) = pend2.lock() { p[idx] = false; }
+            });
+        }
+    }
 }
 
 // ── Helper trait ─────────────────────────────────────────────────────────────
