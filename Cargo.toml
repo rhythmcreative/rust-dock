@@ -10,7 +10,7 @@ env_logger = "0.11.10"
 freedesktop-desktop-entry = "0.8.1"
 gio = "0.22.6"
 glib = { version = "0.22.7", features = ["v2_76"] }
-gtk4 = "0.11.3"
+gtk4 = { version = "0.11.3", features = ["v4_8"] }
 gtk4-layer-shell = "0.8.0"
 hyprland = "0.3.13"
 log = "0.4.32"

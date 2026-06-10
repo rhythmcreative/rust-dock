@@ -11,6 +11,7 @@ use std::rc::{Rc, Weak};
 use std::cell::{RefCell, Cell};
 use std::sync::{mpsc, Arc};
 
+
 // ── Preview window state shared across all buttons ──────────────────────────
 pub struct PreviewState {
     /// The dedicated layer-shell preview window (never destroyed, just shown/hidden)
@@ -551,12 +552,6 @@ impl Dock {
 
         let pinned_apps = self.config.borrow().pinned_apps.clone();
 
-        log::debug!(
-            "refresh: {} clients, {} pinned",
-            app_counts.values().sum::<usize>(),
-            pinned_apps.len()
-        );
-
         for app_id in &pinned_apps {
             if let Some(app) = AppInfo::find_by_id(app_id) {
                 // Remove by the class key (lowercase) — that is what app_counts uses.
@@ -594,10 +589,21 @@ impl Dock {
             self.workspace_box.remove(&child);
         }
 
-        // Gather running apps
+        // Resolve the dock's monitor index once (for multi-monitor filtering).
+        let dock_monitor_id: Option<i32> = self.config.borrow().output.as_ref()
+            .and_then(|name| self.hyprland.get_monitor_id(name));
+
+        // Gather running apps — optionally restricted to the dock's monitor.
         let mut app_counts: std::collections::HashMap<String, usize> = Default::default();
         let mut running_ordered: Vec<(String, AppInfo)> = Vec::new();
-        for client in self.hyprland.get_clients() {
+        let mut all_clients = self.hyprland.get_clients();
+
+        // Multi-monitor: own-monitor windows first, then others.
+        if let Some(mon_id) = dock_monitor_id {
+            all_clients.sort_by_key(|c| if c.monitor == mon_id { 0 } else { 1 });
+        }
+
+        for client in &all_clients {
             let class = client.class.clone();
             if class.is_empty() { continue; }
             let class_key = class.to_lowercase();
@@ -611,6 +617,11 @@ impl Dock {
                 running_ordered.push((class_key.clone(), app));
             }
             *app_counts.entry(class_key).or_insert(0) += 1;
+        }
+
+        // Sort alphabetically if configured.
+        if self.config.borrow().sort_running_apps {
+            running_ordered.sort_by(|(_, a), (_, b)| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
         }
 
         let pinned_apps = self.config.borrow().pinned_apps.clone();
@@ -670,7 +681,7 @@ impl Dock {
 
         let vbox = Box::builder().orientation(Orientation::Vertical).spacing(2).build();
         if let Some(icon_name) = &app.icon {
-            let img = Image::from_icon_name(icon_name);
+            let img = create_icon_image(icon_name);
             img.set_pixel_size(self.config.borrow().icon_size);
             vbox.append(&img);
         } else {
@@ -828,7 +839,7 @@ impl Dock {
                 .spacing(10)
                 .css_classes(vec!["ctx-header".to_string()])
                 .build();
-            let header_icon = Image::from_icon_name(
+            let header_icon = create_icon_image(
                 app.icon.as_deref().unwrap_or("application-x-executable"),
             );
             header_icon.set_pixel_size(18);
@@ -851,7 +862,9 @@ impl Dock {
             let exec = app_exec_m.clone();
             new_win_item.connect_clicked(move |_| {
                 if !exec.is_empty() {
-                    let _ = std::process::Command::new("sh").arg("-c").arg(&exec).spawn();
+                    if let Err(e) = std::process::Command::new("sh").arg("-c").arg(&exec).spawn() {
+                        log::warn!("Failed to launch new window: {e}");
+                    }
                 }
             });
             menu_box.append(&new_win_item);
@@ -886,9 +899,12 @@ impl Dock {
                 let class_c = app_class_m.clone();
                 let pop_r2  = menu_pop.clone();
                 close_item.connect_clicked(move |_| {
-                    let _ = std::process::Command::new("hyprctl")
+                    if let Err(e) = std::process::Command::new("hyprctl")
                         .args(["dispatch", "closewindow", &format!("^{}$", class_c)])
-                        .spawn();
+                        .spawn()
+                    {
+                        log::warn!("Failed to close windows for {}: {e}", class_c);
+                    }
                     pop_r2.popdown();
                 });
                 menu_box.append(&close_item);
@@ -926,13 +942,33 @@ impl Dock {
             drag.connect_prepare(move |_, _, _| {
                 Some(gtk4::gdk::ContentProvider::for_value(&drag_id.to_value()))
             });
+            // Visual feedback: fade the icon being dragged.
+            let btn_drag_begin = btn.clone();
+            drag.connect_drag_begin(move |_, _| {
+                btn_drag_begin.add_css_class("dragging");
+            });
+            let btn_drag_end = btn.clone();
+            drag.connect_drag_end(move |_, _, _| {
+                btn_drag_end.remove_css_class("dragging");
+            });
             btn.add_controller(drag);
 
             let drop = gtk4::DropTarget::new(glib::Type::STRING, gtk4::gdk::DragAction::MOVE);
             let target_id = app.id.clone();
             let cfg_drop = Rc::clone(&config);
             let dock_weak = self.self_weak.borrow().clone();
-            drop.connect_drop(move |_, value, _, _| {
+            // Visual feedback: highlight the drop target while hovering over it.
+            let btn_motion = btn.clone();
+            drop.connect_motion(move |_, _, _| {
+                btn_motion.add_css_class("drop-target");
+                gtk4::gdk::DragAction::MOVE
+            });
+            let btn_leave = btn.clone();
+            drop.connect_leave(move |_| {
+                btn_leave.remove_css_class("drop-target");
+            });
+            drop.connect_drop(move |tgt, value, _, _| {
+                if let Some(w) = tgt.widget() { w.remove_css_class("drop-target"); }
                 if let Ok(dragged) = value.get::<String>() {
                     {
                         let mut c = cfg_drop.borrow_mut();
@@ -960,6 +996,7 @@ thread_local! {
         RefCell::new(std::collections::HashMap::new());
 }
 
+
 /// Focus an existing window of the app (cycling through them on repeated clicks);
 /// if none are open, launch a new instance.
 fn focus_or_launch(app: &AppInfo) {
@@ -977,9 +1014,12 @@ fn focus_or_launch(app: &AppInfo) {
         cur
     });
     let addr = windows[idx].address.clone();
-    let _ = std::process::Command::new("hyprctl")
+    if let Err(e) = std::process::Command::new("hyprctl")
         .args(["dispatch", "focuswindow", &format!("address:{}", addr)])
-        .spawn();
+        .spawn()
+    {
+        log::warn!("Failed to focus window {}: {e}", addr);
+    }
 }
 
 // ── Preview window content management ───────────────────────────────────────
@@ -993,7 +1033,7 @@ fn ctx_menu_item(icon_name: &str, label: &str, close_style: bool) -> Button {
         .spacing(10)
         .build();
 
-    let icon = Image::from_icon_name(icon_name);
+    let icon = create_icon_image(icon_name);
     icon.set_pixel_size(15);
     icon.add_css_class("ctx-menu-icon");
     row.append(&icon);
@@ -1015,7 +1055,6 @@ fn ctx_menu_item(icon_name: &str, label: &str, close_style: bool) -> Button {
         .build()
 }
 
-/// Build a row of preview cards for all windows of one app class.
 fn build_preview_content(
     windows: &[HyprClient],
     icon:    &Option<String>,
@@ -1025,42 +1064,50 @@ fn build_preview_content(
         "left" | "right" => Orientation::Vertical,
         _ => Orientation::Horizontal,
     };
+    let row_classes = vec!["preview-row".to_string(), format!("preview-row-{}", dock_pos)];
     let cards_row = Box::builder()
         .orientation(orientation)
         .spacing(8)
-        .css_classes(vec!["preview-row".to_string()])
+        .css_classes(row_classes)
         .build();
 
     for win in windows {
+        // Card: vertical Box clipped to border-radius via Overflow::Hidden.
+        // Structure: header row on top, thumbnail below — same as Windows taskbar preview.
         let card = Box::builder()
             .orientation(Orientation::Vertical)
             .spacing(0)
             .css_classes(vec!["win-card".to_string()])
             .build();
+        card.set_overflow(gtk4::Overflow::Hidden);
 
-        // ── Title row: icon + title + close ──────────────────────────────
-        let title_row = Box::builder()
+        // ── Header: icon + title + close button ──────────────────────────
+        let header = Box::builder()
             .orientation(Orientation::Horizontal)
-            .spacing(4)
+            .spacing(6)
+            .css_classes(vec!["win-header".to_string()])
             .build();
 
-        let app_icon = Image::from_icon_name(icon.as_deref().unwrap_or("application-x-executable"));
+        let app_icon = create_icon_image(icon.as_deref().unwrap_or("application-x-executable"));
         app_icon.set_pixel_size(14);
-        title_row.append(&app_icon);
+        app_icon.set_valign(Align::Center);
+        header.append(&app_icon);
 
-        let title_str = if win.title.chars().count() > 30 {
-            format!("{}…", win.title.chars().take(30).collect::<String>())
+        let title_str = if win.title.chars().count() > 26 {
+            format!("{}…", win.title.chars().take(26).collect::<String>())
         } else { win.title.clone() };
         let title_lbl = Label::builder()
             .label(&title_str)
             .hexpand(true)
             .xalign(0.0)
+            .ellipsize(gtk4::pango::EllipsizeMode::End)
             .css_classes(vec!["win-title".to_string()])
             .build();
-        title_row.append(&title_lbl);
+        header.append(&title_lbl);
 
         let close_x = Button::builder()
             .label("×")
+            .valign(Align::Center)
             .css_classes(vec!["win-close-btn".to_string()])
             .build();
         let addr_close = win.address.clone();
@@ -1069,37 +1116,40 @@ fn build_preview_content(
                 .args(["dispatch", "closewindow", &format!("address:{}", addr_close)])
                 .spawn();
         });
-        title_row.append(&close_x);
+        header.append(&close_x);
+        card.append(&header);
 
-        card.append(&title_row);
-
-        // ── Thumbnail area ───────────────────────────────────────────────
+        // ── Thumbnail ────────────────────────────────────────────────────
         let thumb = Box::builder()
             .orientation(Orientation::Vertical)
             .halign(Align::Fill)
             .valign(Align::Fill)
+            .hexpand(true)
+            .vexpand(true)
             .css_classes(vec!["win-thumb-box".to_string()])
             .build();
-        thumb.set_size_request(200, 120);
+        thumb.set_size_request(260, 160);
 
-        let ico = Image::from_icon_name(icon.as_deref().unwrap_or("application-x-executable"));
-        ico.set_pixel_size(56);
+        let ico = create_icon_image(icon.as_deref().unwrap_or("application-x-executable"));
+        ico.set_pixel_size(48);
         ico.set_halign(Align::Center);
         ico.set_valign(Align::Center);
         ico.set_hexpand(true);
         ico.set_vexpand(true);
         ico.add_css_class("preview-placeholder");
         thumb.append(&ico);
-
         card.append(&thumb);
 
-        // Focus on click
+        // Focus on click anywhere on the card
         let addr_focus = win.address.clone();
         let click_g = gtk4::GestureClick::new();
         click_g.connect_pressed(move |_, _, _, _| {
-            let _ = std::process::Command::new("hyprctl")
+            if let Err(e) = std::process::Command::new("hyprctl")
                 .args(["dispatch", "focuswindow", &format!("address:{}", addr_focus)])
-                .spawn();
+                .spawn()
+            {
+                log::warn!("Failed to focus window {}: {e}", addr_focus);
+            }
         });
         card.add_controller(click_g);
 
@@ -1148,10 +1198,8 @@ fn update_preview_content(
     let dock_w = alloc.width();
     let dock_h = alloc.height();
 
-    // Calculate button position on screen
     let (bx, by, bw, bh) = get_button_monitor_pos(btn, &dock_pos, config);
 
-    // Reset margins
     s.win.set_margin(Edge::Left, 0);
     s.win.set_margin(Edge::Right, 0);
     s.win.set_margin(Edge::Top, 0);
@@ -1159,48 +1207,41 @@ fn update_preview_content(
 
     let n = windows.len() as i32;
 
-    // Real card footprint (thumb 200x120 + .win-card padding 6px) plus the
-    // .preview-row panel padding (8px) and the 8px spacing between cards.
-    // Used to center the panel under the button and keep it on-screen.
-    const CARD_W: i32 = 212;   // 200 + 2*6
-    const CARD_H: i32 = 168;   // title row (~28) + thumb 120 + 2*6 padding
+    const CARD_W: i32 = 264;
+    const CARD_H: i32 = 196;  // 160 thumb + ~30 header + 2 border + 4 padding
     const PANEL_PAD: i32 = 8;
     const CARD_GAP: i32 = 8;
 
     let mut margin_val = config.margin;
     if config.system_gap_used { margin_val = HyprlandHandler::new().get_gaps_out(); }
     let margin_bottom = config.margin_bottom + margin_val;
-    let margin_top = config.margin_top + margin_val;
-    let margin_left = config.margin_left + margin_val;
-    let margin_right = config.margin_right + margin_val;
+    let margin_top    = config.margin_top    + margin_val;
+    let margin_left   = config.margin_left   + margin_val;
+    let margin_right  = config.margin_right  + margin_val;
 
     match dock_pos.as_str() {
         "left" => {
             let panel_h = n * CARD_H + (n - 1).max(0) * CARD_GAP + 2 * PANEL_PAD;
             let max_top = (monitor_h - panel_h).max(0);
-            let top_margin = (by + bh / 2 - panel_h / 2).clamp(0, max_top);
-            s.win.set_margin(Edge::Top, top_margin);
+            s.win.set_margin(Edge::Top, (by + bh / 2 - panel_h / 2).clamp(0, max_top));
             s.win.set_margin(Edge::Left, margin_left + dock_w + 6);
         }
         "right" => {
             let panel_h = n * CARD_H + (n - 1).max(0) * CARD_GAP + 2 * PANEL_PAD;
             let max_top = (monitor_h - panel_h).max(0);
-            let top_margin = (by + bh / 2 - panel_h / 2).clamp(0, max_top);
-            s.win.set_margin(Edge::Top, top_margin);
+            s.win.set_margin(Edge::Top, (by + bh / 2 - panel_h / 2).clamp(0, max_top));
             s.win.set_margin(Edge::Right, margin_right + dock_w + 6);
         }
         "top" => {
             let panel_w = n * CARD_W + (n - 1).max(0) * CARD_GAP + 2 * PANEL_PAD;
             let max_left = (monitor_w - panel_w).max(0);
-            let left_margin = (bx + bw / 2 - panel_w / 2).clamp(0, max_left);
-            s.win.set_margin(Edge::Left, left_margin);
+            s.win.set_margin(Edge::Left, (bx + bw / 2 - panel_w / 2).clamp(0, max_left));
             s.win.set_margin(Edge::Top, margin_top + dock_h + 6);
         }
         _ => {
             let panel_w = n * CARD_W + (n - 1).max(0) * CARD_GAP + 2 * PANEL_PAD;
             let max_left = (monitor_w - panel_w).max(0);
-            let left_margin = (bx + bw / 2 - panel_w / 2).clamp(0, max_left);
-            s.win.set_margin(Edge::Left, left_margin);
+            s.win.set_margin(Edge::Left, (bx + bw / 2 - panel_w / 2).clamp(0, max_left));
             s.win.set_margin(Edge::Bottom, margin_bottom + dock_h + 6);
         }
     }
@@ -1274,9 +1315,6 @@ fn get_button_monitor_pos(btn: &Button, dock_pos: &str, config: &Config) -> (i32
     (tx + wx as i32, ty + wy as i32, btn_alloc.width(), btn_alloc.height())
 }
 
-/// Continuously capture screenshots while the preview is visible (live preview).
-/// One capture is taken immediately when the preview opens, then refreshed at a
-/// low rate so we don't spawn dozens of `grim` subprocesses per second.
 fn spawn_screenshot_updates(
     windows:       Vec<HyprClient>,
     preview_state: Rc<RefCell<PreviewState>>,
@@ -1288,7 +1326,6 @@ fn spawn_screenshot_updates(
     let content_ptr = content.clone();
     let pending = Arc::new(std::sync::Mutex::new(vec![false; windows.len()]));
 
-    // Kick off the first capture pass right away so thumbnails appear quickly.
     spawn_pending_captures(&windows, &tx, &pending);
 
     glib::timeout_add_local(std::time::Duration::from_millis(750), move || {
@@ -1310,23 +1347,24 @@ fn spawn_screenshot_updates(
                     let mut i = 0;
                     while let Some(w) = card_w {
                         if i == idx {
-                            if let Ok(card) = w.downcast::<Box>() {
+                            // Card is a Box: first child = header, second child = thumb.
+                            if let Ok(card) = w.clone().downcast::<Box>() {
                                 if let Some(thumb_widget) = card.first_child()
-                                    .and_then(|c| c.next_sibling())
+                                    .and_then(|h| h.next_sibling())
                                 {
                                     if let Ok(thumb) = thumb_widget.downcast::<Box>() {
                                         if let Some(old) = thumb.first_child() { thumb.remove(&old); }
-                                        let f = gio::File::for_path(&path);
-                                        if let Ok(tex) = gtk4::gdk::Texture::from_file(&f) {
-                                            let pic = gtk4::Picture::for_paintable(&tex);
-                                            pic.set_halign(Align::Fill);
-                                            pic.set_valign(Align::Fill);
-                                            pic.set_hexpand(true);
-                                            pic.set_vexpand(true);
-                                            pic.set_keep_aspect_ratio(true);
-                                            pic.add_css_class("win-thumbnail");
-                                            thumb.append(&pic);
-                                        }
+                                        let pic = gtk4::Picture::builder()
+                                            .file(&gio::File::for_path(&path))
+                                            .halign(Align::Fill)
+                                            .valign(Align::Fill)
+                                            .hexpand(true)
+                                            .vexpand(true)
+                                            .can_shrink(true)
+                                            .css_classes(vec!["win-thumbnail".to_string()])
+                                            .build();
+                                        pic.set_content_fit(gtk4::ContentFit::Cover);
+                                        thumb.append(&pic);
                                     }
                                 }
                             }
@@ -1347,7 +1385,6 @@ fn spawn_screenshot_updates(
     });
 }
 
-/// Spawn one background `grim` capture per window that isn't already being captured.
 fn spawn_pending_captures(
     windows: &Rc<Vec<HyprClient>>,
     tx:      &mpsc::Sender<(usize, String)>,
@@ -1357,11 +1394,11 @@ fn spawn_pending_captures(
     for (idx, win) in windows.iter().enumerate() {
         if !pend[idx] {
             pend[idx] = true;
-            let tx2 = tx.clone();
-            let addr = win.address.clone();
-            let sid = win.stable_id.clone();
-            let at = win.at;
-            let size = win.size;
+            let tx2   = tx.clone();
+            let addr  = win.address.clone();
+            let sid   = win.stable_id.clone();
+            let at    = win.at;
+            let size  = win.size;
             let pend2 = Arc::clone(pending);
             std::thread::spawn(move || {
                 if let Some(path) = capture_window_screenshot(&addr, &sid, at, size) {
@@ -1384,4 +1421,84 @@ impl CellBorrowPeek for Cell<Option<glib::SourceId>> {
         self.set(val);
         has
     }
+}
+
+fn create_icon_image(icon_name: &str) -> Image {
+    // Absolute or relative file path — load directly.
+    if icon_name.contains('/') {
+        let p = std::path::Path::new(icon_name);
+        if p.exists() {
+            return Image::from_gicon(&gio::FileIcon::new(&gio::File::for_path(p)));
+        }
+    }
+
+    // Strip image extensions that occasionally appear in Icon= fields
+    // (e.g. "myapp.png"). Never strip dots that are part of the name itself
+    // (e.g. "com.github.rafostar.Clapper" must stay intact).
+    let base = icon_name
+        .strip_suffix(".png")
+        .or_else(|| icon_name.strip_suffix(".svg"))
+        .or_else(|| icon_name.strip_suffix(".xpm"))
+        .unwrap_or(icon_name);
+
+    // Ask GTK's icon theme first — it searches the active theme, all parent
+    // themes (hicolor, Adwaita, breeze), and every path in XDG_DATA_DIRS
+    // including Flatpak exports. No auto-generated intermediate names.
+    // The "application-x-executable" fallback ensures we never render blank.
+    if let Some(display) = gtk4::gdk::Display::default() {
+        let theme = gtk4::IconTheme::for_display(&display);
+        if theme.has_icon(base) {
+            return Image::from_icon_name(base);
+        }
+    }
+
+    // GTK didn't find it — search icon files directly across all data dirs.
+    // This covers pixmaps and hicolor sizes not indexed in the theme cache.
+    if let Some(path) = find_icon_file(base) {
+        return Image::from_gicon(&gio::FileIcon::new(&gio::File::for_path(&path)));
+    }
+
+    Image::from_icon_name("application-x-executable")
+}
+
+/// Search for a matching icon file across every XDG data directory, checking
+/// all common hicolor sizes, scalable, and pixmaps in priority order.
+fn find_icon_file(name: &str) -> Option<std::path::PathBuf> {
+    // Build the list of data directories to search (XDG_DATA_DIRS + HOME dirs).
+    let xdg: Vec<std::path::PathBuf> = std::env::var("XDG_DATA_DIRS")
+        .unwrap_or_else(|_| "/usr/local/share:/usr/share".to_string())
+        .split(':')
+        .map(std::path::PathBuf::from)
+        .collect();
+
+    let mut dirs = xdg;
+    if let Ok(home) = std::env::var("HOME") {
+        dirs.push(std::path::PathBuf::from(&home).join(".local/share"));
+        dirs.push(std::path::PathBuf::from(&home).join(".icons"));
+    }
+
+    // Preferred sizes in lookup order (largest first for best quality).
+    let sizes = ["scalable", "512x512", "256x256", "128x128", "96x96",
+                 "64x64", "48x48", "32x32", "24x24", "22x22", "16x16"];
+
+    for dir in &dirs {
+        // 1. hicolor theme at all sizes
+        for size in &sizes {
+            for ext in &["svg", "png", "xpm"] {
+                let p = dir.join(format!("icons/hicolor/{}/apps/{}.{}", size, name, ext));
+                if p.exists() { return Some(p); }
+            }
+        }
+        // 2. Any installed icon theme (catches themes GTK may not have indexed)
+        for ext in &["svg", "png"] {
+            let p = dir.join(format!("icons/{}/{}", name, ext));
+            if p.exists() { return Some(p); }
+        }
+        // 3. pixmaps (legacy apps that install icons here)
+        for ext in &["png", "svg", "xpm"] {
+            let p = dir.join(format!("pixmaps/{}.{}", name, ext));
+            if p.exists() { return Some(p); }
+        }
+    }
+    None
 }

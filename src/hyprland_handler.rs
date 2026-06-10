@@ -1,12 +1,21 @@
 use serde::{Deserialize, Serialize};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::process::Command;
+use std::time::{Duration, Instant};
+
+const CLIENT_CACHE_TTL: Duration = Duration::from_millis(120);
 
 thread_local! {
-    /// Cached Hyprland `general:gaps_out`. Spawning `hyprctl` on every preview
-    /// hover was costly; gaps rarely change at runtime (and the dock margin is
-    /// only applied at startup anyway).
     static GAPS_OUT: Cell<Option<i32>> = const { Cell::new(None) };
+    /// Short-lived cache for `hyprctl clients -j`. Invalidated on window events
+    /// and automatically expired after CLIENT_CACHE_TTL.
+    static CLIENT_CACHE: RefCell<Option<(Instant, Vec<HyprClient>)>> = RefCell::new(None);
+}
+
+/// Discard the client list cache so the next call to `get_clients()` re-fetches.
+/// Call this whenever a window open/close event is received.
+pub fn invalidate_client_cache() {
+    CLIENT_CACHE.with(|c| *c.borrow_mut() = None);
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -18,6 +27,8 @@ pub struct HyprClient {
     pub title: String,
     pub pid: i32,
     pub workspace: HyprWorkspace,
+    /// Hyprland monitor index (0-based). -1 if unknown.
+    pub monitor: i32,
     pub at: [i32; 2],
     pub size: [i32; 2],
 }
@@ -80,6 +91,7 @@ fn client_from_value(v: &serde_json::Value) -> Option<HyprClient> {
         id: workspace.and_then(|w| w.get("id")).and_then(|x| x.as_i64()).unwrap_or(0) as i32,
         name: workspace.and_then(|w| w.get("name")).and_then(|x| x.as_str()).unwrap_or("").to_string(),
     };
+    let monitor = v.get("monitor").and_then(|x| x.as_i64()).unwrap_or(-1) as i32;
     Some(HyprClient {
         address,
         stable_id,
@@ -87,6 +99,7 @@ fn client_from_value(v: &serde_json::Value) -> Option<HyprClient> {
         title,
         pid,
         workspace,
+        monitor,
         at: arr2(v.get("at")),
         size: arr2(v.get("size")),
     })
@@ -98,22 +111,27 @@ impl HyprlandHandler {
     }
 
     pub fn get_clients(&self) -> Vec<HyprClient> {
-        let output = Command::new("hyprctl")
-            .arg("clients")
-            .arg("-j")
-            .output();
+        // Return cached result if still fresh.
+        let cached = CLIENT_CACHE.with(|c| {
+            c.borrow().as_ref().and_then(|(ts, list)| {
+                if ts.elapsed() < CLIENT_CACHE_TTL { Some(list.clone()) } else { None }
+            })
+        });
+        if let Some(list) = cached { return list; }
 
-        let Ok(out) = output else { return Vec::new() };
+        let list = self.fetch_clients();
+        CLIENT_CACHE.with(|c| *c.borrow_mut() = Some((Instant::now(), list.clone())));
+        list
+    }
+
+    fn fetch_clients(&self) -> Vec<HyprClient> {
+        let Ok(out) = Command::new("hyprctl").args(["clients", "-j"]).output() else {
+            return Vec::new();
+        };
         if !out.status.success() { return Vec::new(); }
-
-        // Parse leniently: extract each field by hand so a single unexpected
-        // field type (e.g. a Hyprland JSON change) can't fail the whole list.
         match serde_json::from_slice::<Vec<serde_json::Value>>(&out.stdout) {
             Ok(values) => values.iter().filter_map(client_from_value).collect(),
-            Err(e) => {
-                log::warn!("could not parse `hyprctl clients -j`: {e}");
-                Vec::new()
-            }
+            Err(e) => { log::warn!("could not parse `hyprctl clients -j`: {e}"); Vec::new() }
         }
     }
 
@@ -176,6 +194,19 @@ impl HyprlandHandler {
         0
     }
 
+    /// Map a Wayland output connector name (e.g. "DP-1") to a Hyprland monitor index.
+    pub fn get_monitor_id(&self, output_name: &str) -> Option<i32> {
+        let out = Command::new("hyprctl").args(["monitors", "-j"]).output().ok()?;
+        if !out.status.success() { return None; }
+        let json: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).ok()?;
+        for m in &json {
+            if m.get("name").and_then(|v| v.as_str()) == Some(output_name) {
+                return m.get("id").and_then(|v| v.as_i64()).map(|id| id as i32);
+            }
+        }
+        None
+    }
+
     /// The class of the currently focused window, lowercased.
     pub fn get_active_class(&self) -> Option<String> {
         let out = Command::new("hyprctl").arg("activewindow").arg("-j").output().ok()?;
@@ -185,6 +216,17 @@ impl HyprlandHandler {
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(|s| s.to_lowercase())
+    }
+
+    /// The address of the currently focused window (e.g. "0x1234abcd").
+    pub fn get_active_address(&self) -> Option<String> {
+        let out = Command::new("hyprctl").arg("activewindow").arg("-j").output().ok()?;
+        if !out.status.success() { return None; }
+        let json: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+        json.get("address")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
     }
 
     /// All open workspaces, sorted by ID.

@@ -21,10 +21,14 @@ pub struct AppInfo {
 
 impl AppInfo {
     fn get_search_paths() -> Vec<PathBuf> {
-        let mut paths = vec![PathBuf::from("/usr/share/applications")];
-        if let Some(mut home_apps) = dirs::data_dir() {
-            home_apps.push("applications");
-            paths.push(home_apps);
+        let mut paths = vec![
+            PathBuf::from("/usr/share/applications"),
+            PathBuf::from("/usr/local/share/applications"),
+            PathBuf::from("/var/lib/flatpak/exports/share/applications"),
+        ];
+        if let Some(data_dir) = dirs::data_dir() {
+            paths.push(data_dir.join("applications"));
+            paths.push(data_dir.join("flatpak/exports/share/applications"));
         }
         paths
     }
@@ -39,24 +43,37 @@ impl AppInfo {
     }
 
     fn find_by_id_uncached(id: &str) -> Option<Self> {
-        let id_with_extension = if id.ends_with(".desktop") {
-            id.to_string()
-        } else {
-            format!("{}.desktop", id)
-        };
+        let paths = Self::get_search_paths();
 
-        for path in Iter::new(Self::get_search_paths().into_iter()) {
-            if path.file_name().and_then(|s| s.to_str()) == Some(&id_with_extension) {
+        // 1. Try checking the id as-is (e.g. if it already contains the .desktop extension)
+        for path in Iter::new(paths.clone().into_iter()) {
+            if path.file_name().and_then(|s| s.to_str()) == Some(id) {
                 if let Ok(entry) = DesktopEntry::from_path(&path, None::<&[&str]>) {
                     return Some(AppInfo {
                         id: id.to_string(),
                         name: entry.name::<&str>(&[]).map(|s| s.to_string()).unwrap_or_else(|| id.to_string()),
-                        icon: entry.icon().map(|s| s.to_string()),
+                        icon: entry.icon().map(|s| resolve_icon_name(s)),
                         exec: entry.exec().map(|s| s.to_string()).unwrap_or_default(),
                     });
                 }
             }
         }
+
+        // 2. Try checking with the .desktop extension appended
+        let id_with_extension = format!("{}.desktop", id);
+        for path in Iter::new(paths.into_iter()) {
+            if path.file_name().and_then(|s| s.to_str()) == Some(&id_with_extension) {
+                if let Ok(entry) = DesktopEntry::from_path(&path, None::<&[&str]>) {
+                    return Some(AppInfo {
+                        id: id.to_string(),
+                        name: entry.name::<&str>(&[]).map(|s| s.to_string()).unwrap_or_else(|| id.to_string()),
+                        icon: entry.icon().map(|s| resolve_icon_name(s)),
+                        exec: entry.exec().map(|s| s.to_string()).unwrap_or_default(),
+                    });
+                }
+            }
+        }
+
         None
     }
 
@@ -104,7 +121,7 @@ impl AppInfo {
         AppInfo {
             id: class_lower,
             name: entry.name::<&str>(&[]).map(|s| s.to_string()).unwrap_or_else(|| class.to_string()),
-            icon: entry.icon().map(|s| s.to_string()),
+            icon: entry.icon().map(|s| resolve_icon_name(s)),
             exec: entry.exec().map(|s| s.to_string()).unwrap_or_default(),
         }
     }
@@ -116,6 +133,33 @@ impl AppInfo {
             log::error!("Failed to launch {}: {}", self.name, e);
         }
     }
+}
+
+/// Resolve an icon field value from a .desktop file.
+/// If the value is already an absolute path or a plain name, return it as-is.
+/// If it looks like a bare filename with an image extension (e.g. "myapp.png"),
+/// try to find it in /usr/share/pixmaps before falling back to the bare name.
+fn resolve_icon_name(icon: &str) -> String {
+    // Already an absolute path — use as-is.
+    if icon.starts_with('/') { return icon.to_string(); }
+
+    // Check if it has an image extension but no directory component.
+    let has_ext = icon.ends_with(".png") || icon.ends_with(".svg") || icon.ends_with(".xpm");
+    if has_ext {
+        let candidate = std::path::Path::new("/usr/share/pixmaps").join(icon);
+        if candidate.exists() {
+            return candidate.to_string_lossy().into_owned();
+        }
+        // Strip extension so the theme lookup works (e.g. "myapp.png" → "myapp").
+        return icon
+            .strip_suffix(".png")
+            .or_else(|| icon.strip_suffix(".svg"))
+            .or_else(|| icon.strip_suffix(".xpm"))
+            .unwrap_or(icon)
+            .to_string();
+    }
+
+    icon.to_string()
 }
 
 /// Strip desktop-entry field codes (`%u`, `%f`, …) from an Exec line.

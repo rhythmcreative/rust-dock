@@ -11,7 +11,7 @@ use clap::Parser;
 use cli::Cli;
 use config::Config;
 use dock::Dock;
-use hyprland_handler::DockEvent;
+use hyprland_handler::{DockEvent, invalidate_client_cache};
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
@@ -83,6 +83,16 @@ fn main() {
     let config_activate = Rc::clone(&config_rc);
     let cli_activate = Rc::clone(&cli_rc);
     app.connect_activate(move |app| {
+        // Register Flatpak (and other XDG) icon directories with GTK's icon theme
+        // so that app icons installed via Flatpak are resolved correctly.
+        if let Some(display) = gtk4::gdk::Display::default() {
+            let theme = gtk4::IconTheme::for_display(&display);
+            theme.add_search_path("/var/lib/flatpak/exports/share/icons");
+            if let Some(data_dir) = dirs::data_dir() {
+                theme.add_search_path(data_dir.join("flatpak/exports/share/icons"));
+            }
+        }
+
         let config_ref = config_activate.borrow();
         style::load_css(&*config_ref);
         drop(config_ref);
@@ -116,14 +126,21 @@ fn main() {
                 (changed, ws_changed, focus)
             };
             if window_changed {
-                dock_hypr.refresh();
+                // Discard the client cache so both rebuilds fetch fresh data.
+                invalidate_client_cache();
+                // Only the workspace bar (running apps) needs updating for most
+                // open/close events — pinned icons and layout stay the same.
+                dock_hypr.refresh_workspaces();
                 // Race condition fix: Hyprland may emit `openwindow` before
-                // `hyprctl clients -j` lists the new window. Schedule a second
-                // refresh 350ms later so the new app is guaranteed to appear.
+                // `hyprctl clients -j` lists the new window. Full refresh 350ms
+                // later guarantees a new pinned-app indicator is picked up too.
                 let dock_delayed = Rc::clone(&dock_hypr);
                 glib::timeout_add_local_once(
                     std::time::Duration::from_millis(350),
-                    move || { dock_delayed.refresh(); },
+                    move || {
+                        invalidate_client_cache();
+                        dock_delayed.refresh();
+                    },
                 );
             }
             if workspace_changed && !window_changed {

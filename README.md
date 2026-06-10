@@ -155,9 +155,9 @@ ContextPos      = 5
 Mode       = none           ; window-preview mode
 FPS        = 30
 BufferSize = 5
-ShowDelay  = 500            ; delay before a preview appears (ms)
-HideDelay  = 350            ; delay before a preview hides (ms)
-MoveDelay  = 100            ; delay when moving between previews (ms)
+ShowDelay  = 70             ; delay before a preview appears (ms)
+HideDelay  = 300            ; delay before a preview hides (ms)
+MoveDelay  = 30             ; delay when moving between previews (ms)
 
 [Theme]
 Spacing = 5                 ; spacing between dock icons

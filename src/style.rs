@@ -45,6 +45,14 @@ pub fn load_css(config: &Config) {
         button:hover {{
             background-color: alpha(@color1, 0.28);
         }}
+        button.dragging {{
+            opacity: 0.45;
+        }}
+        button.drop-target {{
+            background-color: alpha(@color2, 0.28);
+            border: 1px solid alpha(@color2, 0.70);
+            border-radius: {btn_radius}px;
+        }}
         .launcher-btn {{ color: @color2; }}
         .running {{ border-bottom: 2px solid @color4; }}
         /* Highlight the icon of the currently focused app. */
@@ -59,68 +67,88 @@ pub fn load_css(config: &Config) {
         }}
 
         /* ── Preview window (dock-preview layer surface) ──── */
-        window.dock-preview-window {{
-            background: transparent !important;
-            border: none !important;
-            box-shadow: none !important;
-        }}
-        /* The preview-row is the direct child of the preview window, so we
-           style it as a single cohesive panel that groups all window cards. */
-        .preview-row {{
-            background-color: alpha(@background, 0.92);
+        /* GTK4 adds a `decoration` node for CSD shadows even when set_decorated(false).
+           Must be zeroed out or a visible border/shadow appears around the window. */
+        window.dock-preview-window,
+        window.dock-preview-window > contents,
+        window.dock-preview-window decoration,
+        window.dock-preview-window decoration:backdrop {{
+            background: transparent;
+            background-color: transparent;
             border: none;
-            border-radius: 12px;
-            padding: 8px;
-            box-shadow: 0 6px 24px alpha(#000, 0.35);
+            box-shadow: none;
+            margin: 0;
+            padding: 0;
         }}
-        /* ── Window preview cards ── */
-        /* Each card is its own separated, rounded tile. */
+        /* Same fix for the main dock window decoration node. */
+        window:not(.dock-preview-window) decoration {{
+            box-shadow: none;
+            border: none;
+            margin: 0;
+        }}
+        /* ── Preview panel ────────────────────────────────────────────────── */
+        .preview-row {{
+            background-color: alpha(@background, {opacity});
+            border-radius: {preview_radius}px;
+            border: 1px solid alpha(@color1, 0.35);
+            padding: 10px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.60);
+        }}
+        .preview-row-bottom {{ border-bottom: none; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }}
+        .preview-row-top    {{ border-top: none;    border-top-left-radius: 0;    border-top-right-radius: 0;    }}
+        .preview-row-left   {{ border-left: none;   border-top-left-radius: 0;    border-bottom-left-radius: 0;  }}
+        .preview-row-right  {{ border-right: none;  border-top-right-radius: 0;   border-bottom-right-radius: 0; }}
+
+        /* ── Window preview cards (Windows taskbar style) ─────────────────── */
+        /* Box + Overflow::Hidden clips header + thumbnail to border-radius. */
         .win-card {{
-            background-color: alpha(@color1, 0.08);
-            border: 1px solid alpha(@color1, 0.18);
-            border-radius: 10px;
-            padding: 6px;
-            min-width: 200px;
-            transition: background-color 120ms ease, border-color 120ms ease;
+            border-radius: {card_radius}px;
+            border: 1px solid alpha(@color1, 0.22);
+            background-color: alpha(@background, 0.95);
+            min-width: 260px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.45);
+            transition: border-color 140ms ease, box-shadow 140ms ease;
         }}
         .win-card:hover {{
-            background-color: alpha(@color1, 0.16);
-            border-color: alpha(@color1, 0.45);
+            border-color: alpha(@color2, 0.80);
+            box-shadow: 0 6px 22px rgba(0,0,0,0.65);
         }}
-        .win-thumb-box {{
-            background-color: alpha(@background, 0.6);
-            border: none;
-            border-radius: 10px;
-            min-height: 120px;
-            min-width: 200px;
+        /* Header bar: icon + title + close button. */
+        .win-header {{
+            background-color: alpha(@background, 0.75);
+            border-bottom: 1px solid alpha(@color1, 0.18);
+            padding: 5px 6px 5px 16px;
         }}
         .win-title {{
             font-size: 11px;
             font-weight: 500;
-            color: alpha(@foreground, 0.85);
+            color: @foreground;
         }}
+        /* Close button: visible, turns red on hover. */
         .win-close-btn {{
             background-color: transparent;
             border: none;
-            border-radius: 50%;
-            color: alpha(@foreground, 0.5);
-            font-size: 12px;
+            border-radius: 4px;
+            color: alpha(@foreground, 0.55);
+            font-size: 14px;
             font-weight: bold;
-            min-height: 18px;
-            min-width: 18px;
+            min-height: 20px;
+            min-width: 20px;
             padding: 0;
-            transition: background-color 120ms ease;
+            transition: background-color 100ms ease, color 100ms ease;
         }}
         .win-close-btn:hover {{
-            background-color: #e74c3c;
-            color: white;
+            background-color: alpha(#e74c3c, 0.85);
+            color: #ffffff;
         }}
-        .win-thumbnail {{
-            border-radius: 10px;
+        /* Thumbnail area. */
+        .win-thumb-box {{
+            background-color: alpha(#000000, 0.25);
+            min-height: 160px;
+            min-width: 260px;
         }}
-        .preview-placeholder {{
-            opacity: 0.5;
-        }}
+        .win-thumbnail {{ border-radius: 0; }}
+        .preview-placeholder {{ opacity: 0.28; }}
 
         /* ── Right-click context menu ─────────────────────── */
         /* Kill the default popover chrome AND the heavy shadow: on a transparent
@@ -237,7 +265,9 @@ pub fn load_css(config: &Config) {
     padding = config.padding,
     btn_padding = config.padding / 2,
     btn_radius = config.radius - 2,
-    ws_radius = (config.radius - 2).max(4)
+    ws_radius = (config.radius - 2).max(4),
+    preview_radius = config.radius + 4,
+    card_radius = (config.radius + 6).max(16)
     );
 
     css_data.push_str(&default_css);

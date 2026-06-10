@@ -2,6 +2,7 @@ use ini::Ini;
 use std::path::PathBuf;
 use std::fs;
 use std::io::Write;
+use log;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -44,6 +45,10 @@ pub struct Config {
     pub show_delay: i32,
     pub hide_delay: i32,
     pub move_delay: i32,
+    /// Show smaller preview cards (200×120 instead of 340×200).
+    pub compact_preview: bool,
+    /// Sort the running-apps bar alphabetically.
+    pub sort_running_apps: bool,
 }
 
 impl Config {
@@ -79,9 +84,11 @@ impl Config {
             mode: "none".to_string(),
             fps: 30,
             buffer_size: 5,
-            show_delay: 500,
-            hide_delay: 350,
-            move_delay: 100,
+            show_delay: 70,
+            hide_delay: 300,
+            move_delay: 30,
+            compact_preview: false,
+            sort_running_apps: false,
         };
 
         if let Some(mut path) = dirs::config_dir() {
@@ -105,6 +112,8 @@ impl Config {
                         if let Some(v) = general.get("LauncherCommand") { config.launcher_command = v.to_string(); }
                         if let Some(v) = general.get("NoLauncher") { config.no_launcher = v.parse().unwrap_or(true); }
                         if let Some(v) = general.get("Layer") { config.layer = v.to_string(); }
+                        if let Some(v) = general.get("CompactPreview") { config.compact_preview = v.parse().unwrap_or(false); }
+                        if let Some(v) = general.get("SortRunningApps") { config.sort_running_apps = v.parse().unwrap_or(false); }
                     }
                     if let Some(preview) = ini.section(Some("General.preview")) {
                         if let Some(v) = preview.get("Mode") { config.mode = v.to_string(); }
@@ -113,16 +122,48 @@ impl Config {
                         if let Some(v) = preview.get("ShowDelay") { config.show_delay = v.parse().unwrap_or(500); }
                         if let Some(v) = preview.get("HideDelay") { config.hide_delay = v.parse().unwrap_or(350); }
                         if let Some(v) = preview.get("MoveDelay") { config.move_delay = v.parse().unwrap_or(100); }
+                        if let Some(v) = preview.get("Compact") { config.compact_preview = v.parse().unwrap_or(false); }
                     }
                     if let Some(theme) = ini.section(Some("Theme")) {
                         if let Some(v) = theme.get("Spacing") { config.spacing = v.parse().unwrap_or(5); }
+                    }
+                    // [PinnedApps] section: Apps = firefox,kitty,org.gnome.eog
+                    // Takes precedence over the separate ~./local/share/rust-dock/pinned file.
+                    if let Some(pinned_sec) = ini.section(Some("PinnedApps")) {
+                        if let Some(apps) = pinned_sec.get("Apps") {
+                            let from_ini: Vec<String> = apps.split(',')
+                                .map(|s| s.trim().to_string())
+                                .filter(|s| !s.is_empty())
+                                .collect();
+                            if !from_ini.is_empty() {
+                                config.pinned_apps = from_ini;
+                            }
+                        }
                     }
                 }
             }
         }
 
         config.load_pinned_apps();
-        config
+        config.validate_and_clamp();
+        config    }
+
+    fn validate_and_clamp(&mut self) {
+        self.opacity     = self.opacity.clamp(0.05, 1.0);
+        self.icon_size   = self.icon_size.clamp(8, 128);
+        self.padding     = self.padding.clamp(0, 64);
+        self.radius      = self.radius.clamp(0, 40);
+        self.margin      = self.margin.clamp(0, 200);
+        self.show_delay  = self.show_delay.clamp(0, 5000);
+        self.hide_delay  = self.hide_delay.clamp(0, 5000);
+        self.move_delay  = self.move_delay.clamp(0, 2000);
+        if !["top", "bottom", "left", "right"].contains(&self.position.as_str()) {
+            log::warn!("Invalid position '{}', defaulting to 'bottom'", self.position);
+            self.position = "bottom".to_string();
+        }
+        if !["top", "bottom", "overlay", "background"].contains(&self.layer.as_str()) {
+            self.layer = "top".to_string();
+        }
     }
 
     pub fn load_pinned_apps(&mut self) {
