@@ -339,15 +339,41 @@ impl Dock {
             dock_win:         window.clone(),
         }));
 
-        // Add motion controller to the preview window itself so that
-        // moving into the preview cancels the hide timer.
+        // Motion controller on the preview window itself.
+        //
+        // Problem: the preview is a Layer::Overlay surface that sits just above
+        // the dock. When the cursor moves upward from the dock it crosses this
+        // surface, triggering `connect_enter`. If we simply cancelled the
+        // hide_timer there the preview would never hide (the hide_timer set by
+        // the button's leave handler is gone and nothing restarts it).
+        //
+        // Fix: instead of fully cancelling the hide_timer we replace it with a
+        // longer-lived one (1 500 ms). This keeps the preview alive while the
+        // user intentionally hovers over a preview card to click it, but
+        // guarantees it will disappear even if the cursor only crossed the
+        // surface accidentally. When the cursor leaves the preview we trim the
+        // delay down to 80 ms so the hide feels instant.
         let ht_preview  = Rc::clone(&hide_timer);
         let st_preview  = Rc::clone(&show_timer);
         let ps_preview  = Rc::clone(&preview_state);
         let pv_motion   = EventControllerMotion::new();
         pv_motion.connect_enter(move |_, _, _| {
-            if let Some(id) = ht_preview.take() { safe_remove_source(id); }
             if let Some(id) = st_preview.take() { safe_remove_source(id); }
+
+            // Cancel the existing hide_timer and start a longer replacement so
+            // the preview stays alive while the user interacts with a card.
+            if let Some(id) = ht_preview.take() { safe_remove_source(id); }
+            let ps2 = Rc::clone(&ps_preview);
+            let ht2 = Rc::clone(&ht_preview);
+            let id = glib::timeout_add_local(std::time::Duration::from_millis(1500), move || {
+                ht2.set(None);
+                let mut s = ps2.borrow_mut();
+                s.win.hide();
+                s.visible = false;
+                s.active_class = String::new();
+                glib::ControlFlow::Break
+            });
+            ht_preview.set(Some(id));
 
             let ps = ps_preview.borrow();
             if ps.smart_view {
@@ -358,9 +384,12 @@ impl Dock {
         let ps_leave    = Rc::clone(&preview_state);
         let ht_leave    = Rc::clone(&hide_timer);
         pv_motion.connect_leave(move |_| {
+            // Cursor left the preview — cancel the 1 500 ms stay-timer and
+            // replace it with a short one so the hide feels immediate.
+            if let Some(id) = ht_leave.take() { safe_remove_source(id); }
             let ps  = Rc::clone(&ps_leave);
             let ht  = Rc::clone(&ht_leave);
-            let id = glib::timeout_add_local(std::time::Duration::from_millis(350), move || {
+            let id = glib::timeout_add_local(std::time::Duration::from_millis(80), move || {
                 let mut s = ps.borrow_mut();
                 s.win.hide();
                 s.visible = false;

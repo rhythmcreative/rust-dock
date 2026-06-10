@@ -85,7 +85,7 @@ impl Config {
             fps: 30,
             buffer_size: 5,
             show_delay: 20,
-            hide_delay: 300,
+            hide_delay: 120,
             move_delay: 30,
             compact_preview: false,
             sort_running_apps: false,
