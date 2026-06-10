@@ -143,61 +143,63 @@ install_layer_shell_from_source() {
 
 step_deps() {
     section "SYSTEM DEPENDENCIES"
+    info "Installing packages via $PM..."
 
-    gum spin --spinner dot --title "Installing packages for $PM..." -- bash -c "
-        case '$PM' in
-        pacman)
-            pm=pacman
-            command -v yay  > /dev/null && pm=yay
-            command -v paru > /dev/null && pm=paru
-            \$pm -S --needed --noconfirm gtk4 gtk4-layer-shell grim pkgconf base-devel rust
-            ;;
-        apt)
-            sudo apt-get update -qq
-            layer_pkg=libgtk4-layer-shell-dev
-            apt-cache show \$layer_pkg > /dev/null 2>&1 || layer_pkg=libgtk4-layer-shell1-dev
-            sudo apt-get install -y libgtk-4-dev \$layer_pkg grim pkg-config \
-                build-essential libglib2.0-dev libcairo2-dev cargo rustc
-            ;;
-        dnf)
-            sudo dnf install -y gtk4-devel gtk4-layer-shell-devel grim \
-                pkgconf-pkg-config gcc gcc-c++ rust cargo
-            ;;
-        zypper)
-            sudo zypper install -y gtk4-devel gtk4-layer-shell-devel grim \
-                pkg-config gcc gcc-c++ rust cargo
-            ;;
-        xbps)
-            sudo xbps-install -Sy gtk4-devel gtk4-layer-shell-devel grim \
-                pkg-config gcc rust cargo
-            ;;
-        apk)
-            sudo apk add --no-cache gtk4.0-dev grim pkgconf build-base rust cargo
-            ;;
-        emerge)
-            sudo emerge --noreplace x11-libs/gtk+ dev-libs/gtk4-layer-shell \
-                x11-apps/grim dev-util/pkgconf virtual/rust
-            ;;
-        eopkg)
-            sudo eopkg install -y libgtk-4-devel grim pkg-config gcc rust cargo
-            ;;
-        *)
-            echo 'Unknown package manager — install dependencies manually.'
-            exit 1
-            ;;
-        esac
-    "
+    # Nota: NO usar gum spin aquí — los gestores de paquetes necesitan
+    # stdin para cosas como importar claves GPG de AUR o pedir sudo.
+    case "$PM" in
+    pacman)
+        local pm=pacman
+        command -v yay  > /dev/null && pm=yay
+        command -v paru > /dev/null && pm=paru
+        # gtk4-layer-shell está en AUR, por eso necesitamos yay/paru
+        "$pm" -S --needed --noconfirm gtk4 gtk4-layer-shell grim pkgconf base-devel rust
+        ;;
+    apt)
+        sudo apt-get update -qq
+        local layer_pkg=libgtk4-layer-shell-dev
+        apt-cache show "$layer_pkg" > /dev/null 2>&1 || layer_pkg=libgtk4-layer-shell1-dev
+        sudo apt-get install -y libgtk-4-dev "$layer_pkg" grim pkg-config \
+            build-essential libglib2.0-dev libcairo2-dev cargo rustc
+        ;;
+    dnf)
+        sudo dnf install -y gtk4-devel gtk4-layer-shell-devel grim \
+            pkgconf-pkg-config gcc gcc-c++ rust cargo
+        ;;
+    zypper)
+        sudo zypper install -y gtk4-devel gtk4-layer-shell-devel grim \
+            pkg-config gcc gcc-c++ rust cargo
+        ;;
+    xbps)
+        sudo xbps-install -Sy gtk4-devel gtk4-layer-shell-devel grim \
+            pkg-config gcc rust cargo
+        ;;
+    apk)
+        sudo apk add --no-cache gtk4.0-dev grim pkgconf build-base rust cargo
+        ;;
+    emerge)
+        sudo emerge --noreplace x11-libs/gtk+ dev-libs/gtk4-layer-shell \
+            x11-apps/grim dev-util/pkgconf virtual/rust
+        ;;
+    eopkg)
+        sudo eopkg install -y libgtk-4-devel grim pkg-config gcc rust cargo
+        ;;
+    *)
+        gum style --foreground 1 "  [ERROR] Unknown package manager. Install dependencies manually."
+        exit 1
+        ;;
+    esac
 
-    # gtk4-layer-shell desde source si no la encontró el pkg manager
+    # gtk4-layer-shell desde source si el pkg manager no la tiene (Alpine, Solus, etc.)
     if ! pkg-config --exists gtk4-layer-shell 2>/dev/null; then
-        gum spin --spinner moon --title "Building gtk4-layer-shell from source..." -- \
-            bash -c "$(declare -f install_layer_shell_from_source); install_layer_shell_from_source"
+        info "gtk4-layer-shell not found via pkg-config — building from source..."
+        install_layer_shell_from_source
     fi
 
     # Rust via rustup si cargo sigue sin estar
     if ! command -v cargo > /dev/null; then
-        gum spin --spinner dot --title "Installing Rust via rustup..." -- \
-            bash -c "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path"
+        info "Installing Rust via rustup..."
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path
         # shellcheck source=/dev/null
         source "$HOME/.cargo/env"
     fi
