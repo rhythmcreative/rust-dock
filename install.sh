@@ -1,181 +1,146 @@
 #!/usr/bin/env bash
-# rust-dock installer — supports most major Linux distributions.
+# rust-dock installer
 
-set -euo pipefail
+export GUM_CHOOSE_CURSOR_FOREGROUND="7"
+export GUM_CHOOSE_HEADER_FOREGROUND="7"
+export GUM_CHOOSE_SELECTED_FOREGROUND="7"
+export GUM_SPIN_SPINNER_FOREGROUND="7"
+export GUM_STYLE_FOREGROUND="7"
+export GUM_CONFIRM_PROMPT_FOREGROUND="7"
+export GUM_CONFIRM_SELECTED_BACKGROUND="7"
+export GUM_CONFIRM_SELECTED_FOREGROUND="0"
 
-BOLD='\033[1m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-NC='\033[0m'
+DOTFILES_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
-info()    { echo -e "${GREEN}[+]${NC} $*"; }
-warn()    { echo -e "${YELLOW}[!]${NC} $*"; }
-error()   { echo -e "${RED}[✗]${NC} $*" >&2; }
-header()  { echo -e "\n${BOLD}$*${NC}"; }
+# --- UI ---
 
-command_exists() { command -v "$1" >/dev/null 2>&1; }
-
-header "rust-dock installer"
-
-# ── 1. Dependencies ──────────────────────────────────────────────────────────
-header "Installing dependencies..."
-
-install_deps_pacman() {
-    local pm="pacman"
-    command_exists yay  && pm="yay"
-    command_exists paru && pm="paru"
-    info "Package manager: $pm (Arch / Manjaro / EndeavourOS)"
-    if [[ "$pm" == "pacman" ]]; then
-        sudo pacman -S --needed --noconfirm gtk4 gtk4-layer-shell grim pkgconf base-devel
-        command_exists cargo || sudo pacman -S --needed --noconfirm rust
-    else
-        $pm -S --needed --noconfirm gtk4 gtk4-layer-shell grim pkgconf base-devel
-        command_exists cargo || $pm -S --needed --noconfirm rust
-    fi
+print_banner() {
+    clear
+    echo "██████╗ ██╗   ██╗███████╗████████╗       ██████╗  ██████╗  ██████╗██╗  ██╗"
+    echo "██╔══██╗██║   ██║██╔════╝╚══██╔══╝       ██╔══██╗██╔═══██╗██╔════╝██║ ██╔╝"
+    echo "██████╔╝██║   ██║███████╗   ██║   ██████╗██║  ██║██║   ██║██║     █████╔╝ "
+    echo "██╔══██╗██║   ██║╚════██║   ██║         ██║  ██║██║   ██║██║     ██╔═██╗ "
+    echo "██║  ██║╚██████╔╝███████║   ██║          ██████╔╝╚██████╔╝╚██████╗██║  ██╗"
+    echo "╚═╝  ╚═╝ ╚═════╝ ╚══════╝   ╚═╝          ╚═════╝  ╚═════╝  ╚═════╝╚═╝  ╚═╝"
+    echo ""
 }
 
-install_deps_apt() {
-    info "Package manager: apt (Debian / Ubuntu / Linux Mint / Pop!_OS)"
-    sudo apt-get update -qq
-    # gtk4-layer-shell may be named differently on older distros
-    local layer_pkg="libgtk4-layer-shell-dev"
-    apt-cache show "$layer_pkg" >/dev/null 2>&1 || layer_pkg="libgtk4-layer-shell1-dev"
-    sudo apt-get install -y libgtk-4-dev "$layer_pkg" grim pkg-config \
-        build-essential libglib2.0-dev libcairo2-dev
-    command_exists cargo || sudo apt-get install -y cargo rustc
+section() {
+    echo ""
+    gum style --bold --margin "1 0" --underline " SECTION: $1 "
 }
 
-install_deps_dnf() {
-    info "Package manager: dnf (Fedora / RHEL / CentOS Stream)"
-    sudo dnf install -y gtk4-devel gtk4-layer-shell-devel grim \
-        pkgconf-pkg-config gcc gcc-c++ rust cargo
-}
+info()    { echo "  [SYSTEM] $1"; }
+success() { echo "  [DONE]   $1"; }
+warn()    { echo "  [WARN]   $1"; }
 
-install_deps_zypper() {
-    info "Package manager: zypper (openSUSE Leap / Tumbleweed)"
-    sudo zypper install -y gtk4-devel gtk4-layer-shell-devel grim \
-        pkg-config gcc gcc-c++ rust cargo
-}
+# --- CHECKS ---
 
-install_deps_xbps() {
-    info "Package manager: xbps (Void Linux)"
-    sudo xbps-install -Sy gtk4-devel gtk4-layer-shell-devel grim \
-        pkg-config gcc rust cargo
-}
-
-install_deps_apk() {
-    info "Package manager: apk (Alpine Linux)"
-    sudo apk add --no-cache gtk4.0-dev grim pkgconf build-base rust cargo
-    # gtk4-layer-shell may need to be compiled from source on Alpine
-    if ! pkg-config --exists gtk4-layer-shell 2>/dev/null; then
-        warn "gtk4-layer-shell not in apk — installing from source..."
-        install_layer_shell_from_source
-    fi
-}
-
-install_deps_emerge() {
-    info "Package manager: emerge (Gentoo)"
-    sudo emerge --noreplace x11-libs/gtk+ dev-libs/gtk4-layer-shell \
-        x11-apps/grim dev-util/pkgconf virtual/rust
-}
-
-install_deps_eopkg() {
-    info "Package manager: eopkg (Solus)"
-    sudo eopkg install -y libgtk-4-devel grim pkg-config gcc rust cargo
-    if ! pkg-config --exists gtk4-layer-shell 2>/dev/null; then
-        warn "gtk4-layer-shell not in eopkg — installing from source..."
-        install_layer_shell_from_source
-    fi
-}
-
-install_layer_shell_from_source() {
-    info "Building gtk4-layer-shell from source..."
-    local tmp; tmp=$(mktemp -d)
-    git clone --depth=1 https://github.com/wmww/gtk4-layer-shell "$tmp/gtk4-layer-shell"
-    pushd "$tmp/gtk4-layer-shell" >/dev/null
-    meson setup build --prefix=/usr/local -Dexamples=false -Ddocs=false -Dtests=false
-    ninja -C build
-    sudo ninja -C build install
-    sudo ldconfig 2>/dev/null || true
-    popd >/dev/null
-    rm -rf "$tmp"
-}
-
-# Detect package manager and install deps
-if   command_exists pacman;        then install_deps_pacman
-elif command_exists apt-get;       then install_deps_apt
-elif command_exists dnf;           then install_deps_dnf
-elif command_exists zypper;        then install_deps_zypper
-elif command_exists xbps-install;  then install_deps_xbps
-elif command_exists apk;           then install_deps_apk
-elif command_exists emerge;        then install_deps_emerge
-elif command_exists eopkg;         then install_deps_eopkg
-else
-    warn "No supported package manager found."
-    warn "Please install manually: GTK4 dev headers, gtk4-layer-shell dev headers, grim, Rust/Cargo."
-fi
-
-# Fall back to rustup if cargo is still missing
-if ! command_exists cargo; then
-    info "Installing Rust via rustup..."
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path
-    source "$HOME/.cargo/env"
-fi
-
-# Validate that required libraries are present before wasting a full build
-if ! pkg-config --exists gtk4 2>/dev/null; then
-    error "gtk4 dev headers not found via pkg-config. Aborting."
-    exit 1
-fi
-if ! pkg-config --exists gtk4-layer-shell 2>/dev/null; then
-    error "gtk4-layer-shell dev headers not found via pkg-config. Aborting."
+if [ "$EUID" -eq 0 ]; then
+    echo "Do not run as root."
     exit 1
 fi
 
-# ── 2. Build ─────────────────────────────────────────────────────────────────
-header "Building rust-dock (release)..."
-cargo build --release
+# Ensure gum is available
+if ! command -v gum > /dev/null; then
+    sudo pacman -S --needed --noconfirm gum
+fi
 
-# ── 3. Install binary ────────────────────────────────────────────────────────
-header "Installing binary..."
-BIN_DIR="$HOME/.local/bin"
-mkdir -p "$BIN_DIR"
-install -m 755 target/release/rust-dock "$BIN_DIR/rust-dock"
-info "Binary installed to $BIN_DIR/rust-dock"
+print_banner
+gum spin --spinner pulse --title "ACCESSING SYSTEM CORE..." -- sleep 2
 
-# Add ~/.local/bin to PATH in shell rc files if not already present
-add_to_path() {
-    local rcfile="$1"
-    [[ -f "$rcfile" ]] || return
-    if ! grep -q 'LOCAL_BIN\|\.local/bin' "$rcfile" 2>/dev/null; then
-        echo '' >> "$rcfile"
-        echo '# Added by rust-dock installer' >> "$rcfile"
-        echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$rcfile"
-        info "Added ~/.local/bin to PATH in $rcfile"
+# --- YAY ---
+
+install_yay() {
+    if ! command -v yay > /dev/null; then
+        section "DEPENDENCY: AUR HELPER"
+        gum spin --spinner dot --title "Deploying yay..." -- bash -c "
+            git clone https://aur.archlinux.org/yay.git /tmp/yay-install > /dev/null 2>&1
+            cd /tmp/yay-install && makepkg -si --noconfirm > /dev/null 2>&1
+        "
+        success "yay helper initialized."
     fi
 }
 
-add_to_path "$HOME/.bashrc"
-add_to_path "$HOME/.zshrc"
-add_to_path "$HOME/.profile"
+# --- DEPENDENCIES ---
 
-# Export for the current session so the user can run it right now
-export PATH="$HOME/.local/bin:$PATH"
+step_deps() {
+    section "SYSTEM DEPENDENCIES"
+    info "Installing build dependencies..."
 
-# ── 4. Default configuration ─────────────────────────────────────────────────
-header "Setting up configuration..."
-CONFIG_DIR="$HOME/.config/rust-dock"
-DATA_DIR="$HOME/.local/share/rust-dock"
-CONFIG_FILE="$CONFIG_DIR/hypr-dock.conf"
-PINNED_FILE="$DATA_DIR/pinned"
+    gum spin --spinner dot --title "Installing packages..." -- \
+        yay -S --needed --noconfirm gtk4 gtk4-layer-shell grim pkgconf base-devel rust
 
-mkdir -p "$CONFIG_DIR" "$DATA_DIR"
+    # Fallback: rustup if cargo still missing
+    if ! command -v cargo > /dev/null; then
+        gum spin --spinner dot --title "Installing Rust via rustup..." -- \
+            bash -c "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path"
+        # shellcheck source=/dev/null
+        source "$HOME/.cargo/env"
+    fi
 
-if [ ! -f "$CONFIG_FILE" ]; then
-    cat > "$CONFIG_FILE" <<'EOF'
+    if ! pkg-config --exists gtk4 2>/dev/null; then
+        gum style --foreground 1 "  [ERROR] gtk4 dev headers not found. Aborting."
+        exit 1
+    fi
+    if ! pkg-config --exists gtk4-layer-shell 2>/dev/null; then
+        gum style --foreground 1 "  [ERROR] gtk4-layer-shell not found. Aborting."
+        exit 1
+    fi
+
+    success "Dependencies ready."
+}
+
+# --- BUILD ---
+
+step_build() {
+    section "BUILD"
+    gum spin --spinner moon --title "Compiling rust-dock (release)..." -- \
+        cargo build --release
+    success "Build complete."
+}
+
+# --- INSTALL BINARY ---
+
+step_install_bin() {
+    section "BINARY INSTALLATION"
+    BIN_DIR="$HOME/.local/bin"
+    mkdir -p "$BIN_DIR"
+    install -m 755 "$DOTFILES_DIR/target/release/rust-dock" "$BIN_DIR/rust-dock"
+    info "Binary installed to $BIN_DIR/rust-dock"
+
+    add_to_path() {
+        local rcfile="$1"
+        [[ -f "$rcfile" ]] || return
+        if ! grep -q '\.local/bin' "$rcfile" 2>/dev/null; then
+            echo '' >> "$rcfile"
+            echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$rcfile"
+            info "Added ~/.local/bin to PATH in $rcfile"
+        fi
+    }
+    add_to_path "$HOME/.bashrc"
+    add_to_path "$HOME/.zshrc"
+    add_to_path "$HOME/.profile"
+    export PATH="$BIN_DIR:$PATH"
+
+    success "Binary ready."
+}
+
+# --- CONFIG ---
+
+step_config() {
+    section "CONFIGURATION"
+    CONFIG_DIR="$HOME/.config/rust-dock"
+    DATA_DIR="$HOME/.local/share/rust-dock"
+    CONFIG_FILE="$CONFIG_DIR/hypr-dock.conf"
+    PINNED_FILE="$DATA_DIR/pinned"
+
+    mkdir -p "$CONFIG_DIR" "$DATA_DIR"
+
+    if [ ! -f "$CONFIG_FILE" ]; then
+        cat > "$CONFIG_FILE" <<'EOF'
 [General]
-CurrentTheme  = lotos
+CurrentTheme  = default
 Position      = bottom
 IconSize      = 32
 Padding       = 4
@@ -197,29 +162,124 @@ MoveDelay  = 30
 [Theme]
 Spacing = 5
 EOF
-    info "Created $CONFIG_FILE"
-else
-    info "Keeping existing $CONFIG_FILE"
-fi
+        info "Created $CONFIG_FILE"
+    else
+        info "Keeping existing $CONFIG_FILE"
+    fi
 
-if [ ! -f "$PINNED_FILE" ]; then
-    printf 'firefox\nkitty\ncode\n' > "$PINNED_FILE"
-    info "Created $PINNED_FILE with default pinned apps"
-else
-    info "Keeping existing $PINNED_FILE"
-fi
+    if [ ! -f "$PINNED_FILE" ]; then
+        # Solo agrega apps que existen en el sistema
+        > "$PINNED_FILE"
+        for app in firefox chromium kitty foot alacritty code codium thunar nautilus; do
+            if command -v "$app" > /dev/null 2>&1 || \
+               find /usr/share/applications /home/"$USER"/.local/share/applications \
+                    -name "${app}.desktop" 2>/dev/null | grep -q .; then
+                echo "$app" >> "$PINNED_FILE"
+            fi
+        done
+        # Si no encontró nada, deja el archivo vacío (la dock arranca igual)
+        info "Created $PINNED_FILE"
+    else
+        info "Keeping existing $PINNED_FILE"
+    fi
 
-# ── 5. Done ───────────────────────────────────────────────────────────────────
-header "Installation complete!"
+    success "Configuration ready."
+}
+
+# --- HYPRLAND INTEGRATION ---
+
+step_hyprland() {
+    section "HYPRLAND INTEGRATION"
+    HYPR_CONF="$HOME/.config/hypr/hyprland.conf"
+
+    if [ ! -f "$HYPR_CONF" ]; then
+        warn "hyprland.conf not found — skipping auto-config."
+        return
+    fi
+
+    if ! grep -q "rust-dock" "$HYPR_CONF" 2>/dev/null; then
+        if gum confirm "Add 'exec-once = rust-dock' to hyprland.conf?"; then
+            echo "" >> "$HYPR_CONF"
+            echo "exec-once = rust-dock" >> "$HYPR_CONF"
+            info "Added exec-once = rust-dock to hyprland.conf"
+        fi
+    else
+        info "rust-dock already present in hyprland.conf"
+    fi
+
+    success "Hyprland integration ready."
+}
+
+# --- PYWAL TEMPLATE ---
+
+step_pywal() {
+    section "PYWAL INTEGRATION"
+    WAL_TEMPLATES="$HOME/.config/wal/templates"
+
+    if ! command -v wal > /dev/null 2>&1; then
+        warn "pywal not installed — skipping template setup."
+        return
+    fi
+
+    mkdir -p "$WAL_TEMPLATES"
+
+    if [ ! -f "$WAL_TEMPLATES/colors-waybar.css" ]; then
+        cat > "$WAL_TEMPLATES/colors-waybar.css" <<'EOF'
+/*
+ * Waybar / rust-dock color theme — generated by pywal
+ */
+
+@define-color background {background};
+@define-color foreground {foreground};
+@define-color cursor {cursor};
+
+@define-color color0  {color0};
+@define-color color1  {color1};
+@define-color color2  {color2};
+@define-color color3  {color3};
+@define-color color4  {color4};
+@define-color color5  {color5};
+@define-color color6  {color6};
+@define-color color7  {color7};
+@define-color color8  {color8};
+@define-color color9  {color9};
+@define-color color10 {color10};
+@define-color color11 {color11};
+@define-color color12 {color12};
+@define-color color13 {color13};
+@define-color color14 {color14};
+@define-color color15 {color15};
+EOF
+        info "Created pywal template for rust-dock"
+    else
+        info "Keeping existing pywal template"
+    fi
+
+    # Symlink para waybar si no existe
+    WAYBAR_COLORS="$HOME/.config/waybar/colors-pywal.css"
+    WAL_CACHE="$HOME/.cache/wal/colors-waybar.css"
+    if [ ! -e "$WAYBAR_COLORS" ] && [ -d "$HOME/.config/waybar" ]; then
+        ln -sf "$WAL_CACHE" "$WAYBAR_COLORS"
+        info "Linked colors-pywal.css → ~/.cache/wal/colors-waybar.css"
+    fi
+
+    success "Pywal integration ready."
+}
+
+# --- EXECUTION ---
+
+install_yay
+step_deps
+step_build
+step_install_bin
+step_config
+step_hyprland
+step_pywal
+
+section "DEPLOYMENT COMPLETE"
 echo ""
-echo -e "  Run now:     ${BOLD}rust-dock${NC}"
-echo -e "  Hyprland:    Add ${BOLD}exec-once = rust-dock${NC} to hyprland.conf"
-echo -e "  Config:      ${BOLD}$CONFIG_FILE${NC}"
+echo "  Run now:  rust-dock"
+echo "  Config:   ~/.config/rust-dock/hypr-dock.conf"
+echo "  Pinned:   ~/.local/share/rust-dock/pinned"
 echo ""
-echo "  Tip — prevent Hyprland from adding extra borders to the dock:"
-echo "    windowrulev2 = noborder, class:(rust-dock)"
-echo "    windowrulev2 = noborder, class:(dock-preview)"
-echo ""
-if ! command_exists rust-dock 2>/dev/null; then
-    warn "Restart your terminal (or run: source ~/.bashrc) to use 'rust-dock' directly."
-fi
+success "rust-dock deployed."
