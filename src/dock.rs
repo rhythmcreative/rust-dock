@@ -1328,7 +1328,7 @@ fn spawn_screenshot_updates(
 
     spawn_pending_captures(&windows, &tx, &pending);
 
-    glib::timeout_add_local(std::time::Duration::from_millis(750), move || {
+    glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
         let s = preview_state.borrow();
         if !s.visible { return glib::ControlFlow::Break; }
         if let Some(child) = s.win.child() {

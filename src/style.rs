@@ -1,16 +1,63 @@
 use gtk4::CssProvider;
 use crate::config::Config;
 use std::cell::RefCell;
+use std::time::SystemTime;
 
 thread_local! {
-    /// A single CssProvider reused across reloads. Previously every call created
-    /// and registered a new provider without removing the old ones, leaking
-    /// providers on every Hyprland event and slowing style recalculation.
     static PROVIDER: RefCell<Option<CssProvider>> = const { RefCell::new(None) };
+    /// mtime of colors-waybar.css at last CSS load — used for polling fallback.
+    static LAST_PYWAL_MTIME: RefCell<Option<SystemTime>> = const { RefCell::new(None) };
+}
+
+/// Returns true (and updates the stored mtime) if the pywal colors file
+/// has been modified since the last call. Used as a fallback when the
+/// inotify watcher misses events (atomic rename, directory recreation, etc.).
+pub fn pywal_file_changed() -> bool {
+    let path = match dirs::cache_dir() {
+        Some(mut p) => { p.push("wal/colors-waybar.css"); p }
+        None => return false,
+    };
+    let mtime = match std::fs::metadata(&path).and_then(|m| m.modified()) {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+    LAST_PYWAL_MTIME.with(|last| {
+        let mut last = last.borrow_mut();
+        if last.as_ref() != Some(&mtime) {
+            *last = Some(mtime);
+            true
+        } else {
+            false
+        }
+    })
 }
 
 pub fn load_css(config: &Config) {
     let mut css_data = String::new();
+
+    // Fallback palette — used when pywal has never run.
+    // pywal's @define-color block (appended next) overrides these.
+    css_data.push_str(
+        "@define-color background #1e1e2e;\n\
+         @define-color foreground #cdd6f4;\n\
+         @define-color cursor     #f5e0dc;\n\
+         @define-color color0  #45475a;\n\
+         @define-color color1  #f38ba8;\n\
+         @define-color color2  #a6e3a1;\n\
+         @define-color color3  #f9e2af;\n\
+         @define-color color4  #89b4fa;\n\
+         @define-color color5  #f5c2e7;\n\
+         @define-color color6  #94e2d5;\n\
+         @define-color color7  #bac2de;\n\
+         @define-color color8  #585b70;\n\
+         @define-color color9  #f38ba8;\n\
+         @define-color color10 #a6e3a1;\n\
+         @define-color color11 #f9e2af;\n\
+         @define-color color12 #89b4fa;\n\
+         @define-color color13 #f5c2e7;\n\
+         @define-color color14 #94e2d5;\n\
+         @define-color color15 #a6adc8;\n",
+    );
 
     if let Some(mut pywal_path) = dirs::cache_dir() {
         pywal_path.push("wal/colors-waybar.css");

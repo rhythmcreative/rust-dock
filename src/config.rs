@@ -84,7 +84,7 @@ impl Config {
             mode: "none".to_string(),
             fps: 30,
             buffer_size: 5,
-            show_delay: 70,
+            show_delay: 20,
             hide_delay: 300,
             move_delay: 30,
             compact_preview: false,

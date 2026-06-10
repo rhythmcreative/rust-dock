@@ -153,20 +153,27 @@ fn main() {
         });
 
         // --- Pywal file watcher ---
+        // Watch the whole ~/.cache/wal/ directory so we catch file recreations
+        // (pywal deletes and rewrites files, which inotify sees as CREATE, not MODIFY).
         let (tx_pywal, rx_pywal) = std::sync::mpsc::channel::<()>();
         std::thread::spawn(move || {
             use notify::{Watcher, RecursiveMode};
-            if let Some(mut pywal_path) = dirs::cache_dir() {
-                pywal_path.push("wal/colors-waybar.css");
+            if let Some(mut wal_dir) = dirs::cache_dir() {
+                wal_dir.push("wal");
+                // If the directory doesn't exist yet, poll until pywal runs for the first time.
+                while !wal_dir.exists() {
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                }
                 let (tx, rx) = std::sync::mpsc::channel();
                 if let Ok(mut watcher) = notify::recommended_watcher(tx) {
-                    if pywal_path.exists() {
-                        let _ = watcher.watch(&pywal_path, RecursiveMode::NonRecursive);
-                        for event in rx {
-                            if let Ok(e) = event {
-                                if e.kind.is_modify() {
-                                    let _ = tx_pywal.send(());
-                                }
+                    let _ = watcher.watch(&wal_dir, RecursiveMode::NonRecursive);
+                    for event in rx {
+                        if let Ok(e) = event {
+                            let is_css = e.paths.iter().any(|p| {
+                                p.extension().map_or(false, |ext| ext == "css")
+                            });
+                            if is_css && (e.kind.is_modify() || e.kind.is_create()) {
+                                let _ = tx_pywal.send(());
                             }
                         }
                     }
@@ -177,9 +184,16 @@ fn main() {
         let dock_pywal = Rc::clone(&dock);
         let config_pywal = Rc::clone(&config_activate);
         let rx_pywal = Arc::new(Mutex::new(rx_pywal));
+        // Seed the mtime so the first poll doesn't trigger a spurious reload.
+        style::pywal_file_changed();
         glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
-            let Ok(rx) = rx_pywal.lock() else { return glib::ControlFlow::Continue; };
-            if rx.try_recv().is_ok() {
+            // Primary: inotify watcher. Fallback: mtime polling (catches atomic
+            // renames and directory recreations that inotify may miss).
+            let notified = {
+                let Ok(rx) = rx_pywal.lock() else { return glib::ControlFlow::Continue; };
+                rx.try_recv().is_ok()
+            };
+            if notified || style::pywal_file_changed() {
                 let cfg = config_pywal.borrow();
                 style::load_css(&*cfg);
                 drop(cfg);
