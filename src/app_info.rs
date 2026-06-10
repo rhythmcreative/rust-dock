@@ -44,25 +44,18 @@ impl AppInfo {
 
     fn find_by_id_uncached(id: &str) -> Option<Self> {
         let paths = Self::get_search_paths();
+        let id_lower = id.to_lowercase();
+        let id_with_ext = format!("{}.desktop", id_lower);
 
-        // 1. Try checking the id as-is (e.g. if it already contains the .desktop extension)
-        for path in Iter::new(paths.clone().into_iter()) {
-            if path.file_name().and_then(|s| s.to_str()) == Some(id) {
-                if let Ok(entry) = DesktopEntry::from_path(&path, None::<&[&str]>) {
-                    return Some(AppInfo {
-                        id: id.to_string(),
-                        name: entry.name::<&str>(&[]).map(|s| s.to_string()).unwrap_or_else(|| id.to_string()),
-                        icon: entry.icon().map(|s| resolve_icon_name(s)),
-                        exec: entry.exec().map(|s| s.to_string()).unwrap_or_default(),
-                    });
-                }
-            }
-        }
-
-        // 2. Try checking with the .desktop extension appended
-        let id_with_extension = format!("{}.desktop", id);
+        // Case-insensitive match against desktop filenames (with or without .desktop).
+        // Many apps store their class in lowercase (e.g. "alacritty") but the desktop
+        // file is capitalised ("Alacritty.desktop"), so a strict compare silently fails.
         for path in Iter::new(paths.into_iter()) {
-            if path.file_name().and_then(|s| s.to_str()) == Some(&id_with_extension) {
+            let fname = match path.file_name().and_then(|s| s.to_str()) {
+                Some(f) => f.to_lowercase(),
+                None => continue,
+            };
+            if fname == id_lower || fname == id_with_ext {
                 if let Ok(entry) = DesktopEntry::from_path(&path, None::<&[&str]>) {
                     return Some(AppInfo {
                         id: id.to_string(),
@@ -74,7 +67,10 @@ impl AppInfo {
             }
         }
 
-        None
+        // Fallback: treat the id as a window class name and search by StartupWMClass.
+        // Covers apps whose desktop filename differs from their WM class
+        // (e.g. pinned as "code" but desktop file is "code - oss.desktop").
+        Self::find_by_class_uncached(id)
     }
 
     pub fn find_by_class(class: &str) -> Option<Self> {
