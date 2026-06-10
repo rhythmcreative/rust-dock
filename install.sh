@@ -152,8 +152,10 @@ step_deps() {
         local pm=pacman
         command -v yay  > /dev/null && pm=yay
         command -v paru > /dev/null && pm=paru
-        # gtk4-layer-shell está en AUR, por eso necesitamos yay/paru
-        "$pm" -S --needed --noconfirm gtk4 gtk4-layer-shell grim pkgconf base-devel rust
+        # No instalar rust/cargo si ya está disponible (ej: vía rustup)
+        local rust_pkg=""
+        command -v cargo > /dev/null || rust_pkg="rust"
+        "$pm" -S --needed --noconfirm gtk4 gtk4-layer-shell grim pkgconf base-devel $rust_pkg
         ;;
     apt)
         sudo apt-get update -qq
