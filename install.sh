@@ -334,6 +334,17 @@ step_hyprland() {
         info "rust-dock already present in hyprland.conf"
     fi
 
+    # SUPER+SPACE toggle keybind (sends SIGUSR1 to the running dock).
+    if ! grep -qE 'SIGUSR1.*rust-dock|rust-dock.*SIGUSR1' "$HYPR_CONF" 2>/dev/null; then
+        if gum confirm "Add SUPER+SPACE keybind to toggle rust-dock? (check for conflicts first)"; then
+            echo "" >> "$HYPR_CONF"
+            echo "bind = SUPER, SPACE, exec, pkill -SIGUSR1 rust-dock" >> "$HYPR_CONF"
+            info "Added SUPER+SPACE toggle keybind"
+        fi
+    else
+        info "rust-dock toggle keybind already in hyprland.conf"
+    fi
+
     success "Hyprland integration ready."
 }
 

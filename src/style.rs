@@ -77,6 +77,11 @@ pub fn load_css(config: &Config) {
         }}
         .dock-container {{
             padding: {padding}px;
+            transition: transform 220ms cubic-bezier(0.4, 0, 1, 1), opacity 200ms ease;
+        }}
+        .dock-container.dock-sliding {{
+            transform: {slide_out_transform};
+            opacity: 0;
         }}
         button {{
             background-color: transparent;
@@ -318,6 +323,12 @@ pub fn load_css(config: &Config) {
     card_min_w = if config.compact_preview { 200 } else { 260 },
     thumb_min_h = if config.compact_preview { 108 } else { 160 },
     thumb_min_w = if config.compact_preview { 200 } else { 260 },
+    slide_out_transform = match config.position.as_str() {
+        "top"   => "translateY(-130%)",
+        "left"  => "translateX(-130%)",
+        "right" => "translateX(130%)",
+        _       => "translateY(130%)",
+    },
     );
 
     css_data.push_str(&default_css);

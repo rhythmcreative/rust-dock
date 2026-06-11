@@ -51,6 +51,8 @@ pub struct Dock {
     pub preview_state:    Rc<RefCell<PreviewState>>,
     pub show_timer:       Rc<Cell<Option<glib::SourceId>>>,
     pub hide_timer:       Rc<Cell<Option<glib::SourceId>>>,
+    /// Pending slide-in/out animation timer — cancelled on rapid toggle.
+    anim_timer:           Rc<Cell<Option<glib::SourceId>>>,
 }
 
 fn safe_remove_source(id: glib::SourceId) {
@@ -463,6 +465,7 @@ impl Dock {
             preview_state,
             show_timer,
             hide_timer,
+            anim_timer: Rc::new(Cell::new(None)),
         }
     }
 
@@ -474,23 +477,59 @@ impl Dock {
         self.refresh_workspaces();
     }
 
+    /// Slide the dock off-screen and then hide it. CSS transition drives the visual.
+    fn slide_hide(&self) {
+        if let Some(id) = self.anim_timer.take() { safe_remove_source(id); }
+        self.box_container.add_css_class("dock-sliding");
+        let win   = self.window.clone();
+        let det   = self.detect_window.clone();
+        let box_c = self.box_container.clone();
+        let anim  = Rc::clone(&self.anim_timer);
+        let id = glib::timeout_add_local_once(
+            std::time::Duration::from_millis(230),
+            move || {
+                anim.set(None);
+                win.hide();
+                if let Some(d) = det { d.hide(); }
+                box_c.remove_css_class("dock-sliding");
+            },
+        );
+        self.anim_timer.set(Some(id));
+    }
+
+    /// Show the dock starting from the off-screen position, then slide it in.
+    fn slide_show(&self) {
+        if let Some(id) = self.anim_timer.take() { safe_remove_source(id); }
+        // Start from the out-state so the first render is already off-screen.
+        self.box_container.add_css_class("dock-sliding");
+        self.window.show();
+        if let Some(ref d) = self.detect_window { d.show(); }
+        let box_c = self.box_container.clone();
+        let anim  = Rc::clone(&self.anim_timer);
+        // One frame later: remove the class → CSS transition slides the dock in.
+        let id = glib::timeout_add_local_once(
+            std::time::Duration::from_millis(16),
+            move || {
+                anim.set(None);
+                box_c.remove_css_class("dock-sliding");
+            },
+        );
+        self.anim_timer.set(Some(id));
+    }
+
     pub fn toggle_visibility(&self) {
         if self.window.is_visible() {
-            self.window.hide();
-            if let Some(ref det_win) = self.detect_window { det_win.hide(); }
+            self.slide_hide();
         } else {
-            self.window.show();
-            if let Some(ref det_win) = self.detect_window { det_win.show(); }
+            self.slide_show();
         }
     }
 
     pub fn set_dock_visible(&self, visible: bool) {
         if visible {
-            self.window.show();
-            if let Some(ref det_win) = self.detect_window { det_win.show(); }
+            if !self.window.is_visible() { self.slide_show(); }
         } else {
-            self.window.hide();
-            if let Some(ref det_win) = self.detect_window { det_win.hide(); }
+            if self.window.is_visible() { self.slide_hide(); }
         }
     }
 
