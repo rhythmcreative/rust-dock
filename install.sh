@@ -55,6 +55,11 @@ gpgkey=https://repo.charm.sh/yum/gpg.key' | sudo tee /etc/yum.repos.d/charm.repo
     fi
 }
 
+if [ "$EUID" -eq 0 ]; then
+    echo "Do not run as root. The installer uses sudo internally where needed."
+    exit 1
+fi
+
 ensure_gum
 
 # ── UI ────────────────────────────────────────────────────────────────────────
@@ -84,11 +89,6 @@ success() { echo "  [DONE]   $1"; }
 warn()    { echo "  [WARN]   $1"; }
 
 # ── Checks ────────────────────────────────────────────────────────────────────
-
-if [ "$EUID" -eq 0 ]; then
-    echo "Do not run as root."
-    exit 1
-fi
 
 print_banner
 gum spin --spinner pulse --title "ACCESSING SYSTEM CORE..." -- sleep 2
@@ -222,8 +222,11 @@ step_deps() {
 
 step_build() {
     section "BUILD"
-    gum spin --spinner moon --title "Compiling rust-dock (release)..." -- \
-        cargo build --release
+    info "Compiling rust-dock (release) — this may take a minute..."
+    if ! cargo build --release; then
+        gum style --foreground 1 "  [ERROR] Build failed. See output above."
+        exit 1
+    fi
     success "Build complete."
 }
 
@@ -279,7 +282,6 @@ AutoHideDelay = 400
 SystemGapUsed = true
 Margin        = 8
 NoLauncher    = true
-ContextPos    = 5
 
 [General.preview]
 ShowDelay  = 70
