@@ -932,11 +932,14 @@ impl Dock {
                 let class_c = app_class_m.clone();
                 let pop_r2  = menu_pop.clone();
                 close_item.connect_clicked(move |_| {
-                    if let Err(e) = std::process::Command::new("hyprctl")
-                        .args(["dispatch", "closewindow", &format!("^{}$", class_c)])
-                        .spawn()
-                    {
-                        log::warn!("Failed to close windows for {}: {e}", class_c);
+                    // closewindow only closes one window per call, so iterate by address.
+                    for win in HyprlandHandler::new().get_clients_for_class(&class_c) {
+                        if let Err(e) = std::process::Command::new("hyprctl")
+                            .args(["dispatch", "closewindow", &format!("address:{}", win.address)])
+                            .spawn()
+                        {
+                            log::warn!("Failed to close {}: {e}", win.address);
+                        }
                     }
                     pop_r2.popdown();
                 });
