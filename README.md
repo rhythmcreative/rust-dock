@@ -46,178 +46,84 @@
 
 Everything syncs with pywal automatically
 
-## Overview
+<a href="https://git.io/typing-svg"><img src="https://readme-typing-svg.herokuapp.com?font=Fira+Code&pause=1000&color=F7F7F7&vCenter=true&multiline=true&width=435&height=35&lines=VIEW+OF+OPEN+WINDOWS+IN+REAL+TIME" alt="Typing SVG" /></a>
 
-rust-dock is a lightweight taskbar and application launcher designed specifically for the
-Hyprland Wayland compositor. It uses GTK4 with `gtk4-layer-shell` for hardware-accelerated
-rendering and native Wayland integration, and talks to Hyprland directly over its IPC socket
-for instant, event-driven updates.
+<div align="center">
 
-## Features
+<img width="678" height="300" alt="A" src="https://github.com/user-attachments/assets/d94e2966-c7f7-494b-9552-d49c753eb1fa" />
 
-- **Live window previews** — hovering an icon shows a panel of rounded thumbnail cards, one
-  per open window, captured live with `grim`. Click a card to focus that window, or the `×`
-  to close it.
-- **Click to focus or launch** — clicking a running app focuses its window (and cycles
-  through them on repeated clicks); clicking a closed app launches it.
-- **Active-window highlight** — the icon of the focused app is highlighted in real time.
-- **Right-click context menu** — open a new window, pin/unpin the app, or close all of its
-  windows, with the app name and icon shown in a clean header.
-- **Drag & drop** — reorder pinned icons by dragging them; the new order is saved.
-- **Real-time Pywal sync** — automatically reloads colors from
-  `~/.cache/wal/colors-waybar.css` the moment they change, no restart needed.
-- **Config hot-reload** — edits to the config file are applied live (layout-affecting
-  options like position still need a restart).
-- **Hyprland task management** — running applications appear and disappear in real time,
-  driven by Hyprland's event socket.
-- **Pinned applications** — keep favourite apps on the dock; managed from the right-click
-  menu or a simple text file.
-- **Smart view (auto-hide)** — optionally drop the dock below other windows and reveal it
-  when the cursor reaches the screen edge.
-- **Signal control** — toggle or force-show the dock with Unix signals.
-- **CLI + config file** — configure via command-line flags or an INI file (flags win).
-- **Multi-position & multi-monitor** — anchor to any edge and target a specific output.
+</div>
 
-## Installation
+All the windows change in real time, you can see that the window plays at 30 fps
 
-### Prerequisites
+[![Typing SVG](https://readme-typing-svg.herokuapp.com?font=Fira+Code&pause=1000&color=F7F7F7&vCenter=true&multiline=true&width=435&height=35&lines=INSTALLATION)](https://git.io/typing-svg)
 
-The install script installs dependencies automatically for Arch, Fedora, and Debian/Ubuntu.
-You will need:
-
-- GTK4 development libraries
-- `gtk4-layer-shell` development libraries
-- Rust and Cargo (system packages or [rustup](https://rustup.rs/))
-- Hyprland
-- `grim` (for window-preview thumbnails)
-
-### Install
-
-From the project root:
+For installation it is done through the commands below
 
 ```bash
+git clone https://github.com/rhythmcreative/rust-dock.git
+cd ~/rust-dock
 ./install.sh
 ```
+> [!IMPORTANT]
+> Do <b>NOT</b> run `install.sh` as sudo so that the installation is done correctly
 
-The script will:
+[![Typing SVG](https://readme-typing-svg.herokuapp.com?font=Fira+Code&pause=1000&color=F7F7F7&vCenter=true&multiline=true&width=435&height=35&lines=UNINSTALL)](https://git.io/typing-svg)
 
-1. Detect your distribution and install the required dependencies.
-2. Build the project in release mode.
-3. Install the binary to `~/.local/bin/rust-dock`.
-4. Create a default configuration in `~/.config/rust-dock/`.
-
-> **Note:** make sure `~/.local/bin` is on your `PATH`.
-
-## Usage
-
-Start the dock:
-
-```bash
-rust-dock
-```
-
-To launch it automatically with Hyprland, add this to `~/.config/hypr/hyprland.conf`:
-
-```ini
-exec-once = ~/.local/bin/rust-dock --exclusive-zone --position bottom --icon-size 32
-```
-
-### Command-line options
-
-Flags override the config file.
-
-| Flag | Description | Default |
-| --- | --- | --- |
-| `-p, --position <POS>` | `top` \| `bottom` \| `left` \| `right` | `bottom` |
-| `-i, --icon-size <PX>` | Icon size in pixels | `32` |
-| `--padding <PX>` | Internal padding | `4` |
-| `--spacing <PX>` | Space between icons | `5` |
-| `--radius <PX>` | Corner radius | `10` |
-| `--opacity <0.0-1.0>` | Background opacity | `0.8` |
-| `-o, --output <NAME>` | Target a specific monitor (e.g. `DP-6`) | auto |
-| `-l, --launcher-command <CMD>` | Command for the launcher button | — |
-| `--launcher` / `--no-launcher` | Show / hide the launcher button | hidden |
-| `-e, --exclusive-zone` / `--no-exclusive-zone` | Reserve screen space (or not) | reserve |
-| `--smart-view` | Auto-hide until the cursor hits the edge | off |
-| `--style <PATH>` | Extra CSS file appended to the stylesheet | — |
-
-Run `rust-dock --help` for the full list.
-
-### Remote control
-
-| Action       | Command                  |
-| ------------ | ------------------------ |
-| Toggle dock  | `pkill -USR1 rust-dock`  |
-| Force show   | `pkill -USR2 rust-dock`  |
-
-## Configuration
-
-rust-dock is configured through an INI file at **`~/.config/rust-dock/hypr-dock.conf`**
-(created by the installer). Changes are picked up the next time the dock starts.
-
-```ini
-[General]
-CurrentTheme    = lotos      ; theme folder under ~/.config/rust-dock/themes/
-Position        = bottom     ; top | bottom | left | right
-IconSize        = 32         ; icon size in pixels
-Padding         = 4          ; internal padding
-Radius          = 10         ; corner radius
-Opacity         = 0.8        ; background opacity (0.0 - 1.0)
-Exclusive       = true       ; reserve space so windows don't overlap the dock
-SmartView       = false      ; auto-hide the dock until the cursor hits the edge
-AutoHideDelay   = 400        ; smart-view hide delay (ms)
-SystemGapUsed   = true       ; use Hyprland's general:gaps_out as the dock margin
-Margin          = 8          ; dock margin when SystemGapUsed = false
-Output          =            ; target monitor connector (e.g. DP-6); empty = auto
-LauncherCommand =            ; command for the launcher button
-NoLauncher      = true       ; hide the launcher button
-ContextPos      = 5
-
-[General.preview]
-Mode       = none           ; window-preview mode
-FPS        = 30
-BufferSize = 5
-ShowDelay  = 70             ; delay before a preview appears (ms)
-HideDelay  = 300            ; delay before a preview hides (ms)
-MoveDelay  = 30             ; delay when moving between previews (ms)
-
-[Theme]
-Spacing = 5                 ; spacing between dock icons
-```
-
-Edits to this file are applied live, except layout-affecting options (position,
-exclusive zone, margins) which take effect on the next start.
-
-### Pinned applications
-
-Pinned apps are stored, one desktop-entry id per line, in
-**`~/.local/share/rust-dock/pinned`**:
-
-```
-firefox
-kitty
-code
-```
-
-The id is the `.desktop` file name without the extension (e.g. `firefox` for
-`firefox.desktop`). You normally don't edit this by hand — just **right-click an icon and
-choose "Pin to taskbar" / "Unpin from taskbar"**, and **drag pinned icons** to reorder them.
-
-### Theming
-
-Colors follow your Pywal palette automatically. For extra tweaks, drop a `style.css` in
-`~/.config/rust-dock/themes/<CurrentTheme>/style.css`; it is appended on top of the built-in
-stylesheet.
-
-## Uninstallation
-
+Run the following script
 ```bash
 ./uninstall.sh
 ```
 
-This stops any running instance, removes the binary, and (after confirmation) removes the
-configuration and data directories.
+[![Typing SVG](https://readme-typing-svg.herokuapp.com?font=Fira+Code&pause=1000&color=F7F7F7&vCenter=true&multiline=true&width=435&height=35&lines=COMANDS)](https://git.io/typing-svg)
 
-## License
 
-See the repository for license details.
+```bash
+❯ rust-dock -h
+
+Options:
+  -p, --position <POSITION>
+          Dock position: top | bottom | left | right
+  -i, --icon-size <ICON_SIZE>
+          Icon size in pixels
+      --padding <PADDING>
+          Internal padding of the dock
+      --spacing <SPACING>
+          Space between application icons
+      --radius <RADIUS>
+          Corner radius of the dock
+      --opacity <OPACITY>
+          Background opacity (0.0 - 1.0)
+  -o, --output <OUTPUT>
+          Target a specific monitor by connector name (e.g. DP-6)
+  -l, --launcher-command <LAUNCHER_COMMAND>
+          Command run by the launcher button
+      --launcher
+          Show the launcher button
+      --no-launcher
+          Hide the launcher button
+  -x, --exclusive-zone
+          Reserve screen space so other windows don't overlap the dock (moves other windows aside)
+      --no-exclusive-zone
+          Don't reserve screen space
+      --smart-view
+          Enable smart view (auto-hide until the cursor reaches the edge)
+      --style <STYLE>
+          Path to an extra CSS file appended to the stylesheet
+  -y, --layer <LAYER>
+          Layer shell layer: overlay | top | bottom | background
+  -m, --margin <MARGIN>
+          Margin between the dock and the screen edge
+      --system-gap
+          Align the margin with Hyprland's gaps_out
+      --no-system-gap
+          Do not align the margin with Hyprland's gaps_out
+  -h, --help
+          Print help (see more with '--help')
+  -V, --version
+          Print version
+
+```
+<div align="center">
+ <p><i>Hope you enjoy it :) </i></p>
+</div>
