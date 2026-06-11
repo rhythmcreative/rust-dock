@@ -29,6 +29,27 @@ fn main() {
 
     // CLI options override the config file.
     let cli = Cli::parse();
+
+    if cli.toggle {
+        let my_pid = std::process::id();
+        let mut sent = false;
+        if let Ok(entries) = std::fs::read_dir("/proc") {
+            for entry in entries.flatten() {
+                let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else { continue };
+                if pid == my_pid { continue; }
+                let comm = std::fs::read_to_string(format!("/proc/{}/comm", pid))
+                    .unwrap_or_default();
+                if comm.trim() == "rust-dock" {
+                    let _ = std::process::Command::new("kill")
+                        .args(["-USR1", &pid.to_string()])
+                        .status();
+                    sent = true;
+                }
+            }
+        }
+        std::process::exit(if sent { 0 } else { 1 });
+    }
+
     let mut config = Config::new();
     cli.apply_to(&mut config);
 

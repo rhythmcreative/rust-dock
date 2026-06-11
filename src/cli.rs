@@ -80,6 +80,10 @@ pub struct Cli {
     /// Do not align the margin with Hyprland's gaps_out.
     #[arg(long = "no-system-gap")]
     pub no_system_gap: bool,
+
+    /// Toggle the visibility of a running rust-dock instance and exit.
+    #[arg(long)]
+    pub toggle: bool,
 }
 
 impl Cli {
