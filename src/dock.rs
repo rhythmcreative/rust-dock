@@ -54,9 +54,8 @@ pub struct Dock {
 }
 
 fn safe_remove_source(id: glib::SourceId) {
-    unsafe {
-        glib::ffi::g_source_remove(id.as_raw());
-    }
+    // glib 0.22 doesn't expose a safe source_remove; use the raw FFI directly.
+    unsafe { glib::ffi::g_source_remove(id.as_raw()); }
 }
 
 impl Dock {

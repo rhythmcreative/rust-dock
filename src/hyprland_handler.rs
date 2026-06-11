@@ -60,14 +60,6 @@ pub enum DockEvent {
     ConfigReloaded,
 }
 
-/// A Hyprland workspace with its window count.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct HyprWorkspaceInfo {
-    pub id:      i32,
-    pub name:    String,
-    pub windows: u32,
-}
 
 /// Extract the focused window class from an `activewindow>>CLASS,TITLE` event line.
 pub fn parse_active_class(line: &str) -> Option<String> {
@@ -226,38 +218,6 @@ impl HyprlandHandler {
             .map(|s| s.to_lowercase())
     }
 
-    /// All open workspaces, sorted by ID.
-    #[allow(dead_code)]
-    pub fn get_workspaces(&self) -> Vec<HyprWorkspaceInfo> {
-        let out = match Command::new("hyprctl").arg("workspaces").arg("-j").output() {
-            Ok(o) if o.status.success() => o,
-            _ => return Vec::new(),
-        };
-        let Ok(vals) = serde_json::from_slice::<Vec<serde_json::Value>>(&out.stdout) else {
-            return Vec::new();
-        };
-        let mut list: Vec<HyprWorkspaceInfo> = vals.iter().filter_map(|v| {
-            let id      = v.get("id")?.as_i64()? as i32;
-            let name    = v.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
-            let windows = v.get("windows").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
-            Some(HyprWorkspaceInfo { id, name, windows })
-        }).collect();
-        list.sort_by_key(|w| w.id);
-        list
-    }
-
-    /// ID of the currently active workspace.
-    #[allow(dead_code)]
-    pub fn get_active_workspace_id(&self) -> i32 {
-        let Ok(out) = Command::new("hyprctl").arg("activeworkspace").arg("-j").output() else {
-            return 1;
-        };
-        if !out.status.success() { return 1; }
-        let Ok(json) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else {
-            return 1;
-        };
-        json.get("id").and_then(|v| v.as_i64()).unwrap_or(1) as i32
-    }
 }
 
 /// Capture a screenshot of a specific window.
