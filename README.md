@@ -1,6 +1,6 @@
 <div align="center">
 
-<img width="200" height="200" alt="rust-dock" src="https://github.com/user-attachments/assets/794946b8-8976-4b6e-8268-fc09940a5473" />
+<img width="200" height="200" alt="rust-dock" src="https://github.com/user-attachments/assets/073e72aa-ef28-421b-aa56-5246fbbbcf6d" />
 
 </div>
 
@@ -22,7 +22,29 @@
 
 [![Typing SVG](https://readme-typing-svg.herokuapp.com?font=Fira+Code&pause=1000&color=F7F7F7&vCenter=true&multiline=true&width=435&height=35&lines=PREVIEW)](https://git.io/typing-svg)
 
+<table>
+ <tr>
+  <td width="50%"> <img width="458" height="76" alt="image" src="https://github.com/user-attachments/assets/cc51d4cf-cc65-4fbc-822c-2f6eeab1551c" />
 
+
+</td>
+    <td width="50%"> <img width="575" height="81" alt="image" src="https://github.com/user-attachments/assets/da69cd20-ef07-408a-9fd6-fc4039cba8f7" />
+
+
+</td>
+  </tr>
+  <tr>
+    <td width="50%"><img width="505" height="78" alt="image" src="https://github.com/user-attachments/assets/4302c793-9e7b-487c-8112-956926af41e0" />
+
+
+</td>
+    <td width="50%"><img width="499" height="81" alt="image" src="https://github.com/user-attachments/assets/a763b22a-6233-4a8c-9a80-33875df5fd1d" />
+
+</td>
+  </tr>
+</table>
+
+Everything syncs with pywal automatically
 
 ## Overview
 
