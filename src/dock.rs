@@ -515,6 +515,8 @@ impl Dock {
             },
         );
         self.anim_timer.set(Some(id));
+        // Re-establish exclusive zone after showing (it was 0 while hidden).
+        self.update_exclusive_zone();
     }
 
     pub fn toggle_visibility(&self) {
@@ -1245,7 +1247,15 @@ fn update_preview_content(
 ) {
     let handler = HyprlandHandler::new();
     let windows = handler.get_clients_for_class(class);
-    if windows.is_empty() { return; }
+    if windows.is_empty() {
+        let mut s = ps.borrow_mut();
+        if s.visible {
+            s.win.hide();
+            s.visible = false;
+            s.active_class = String::new();
+        }
+        return;
+    }
 
     let dock_pos = ps.borrow().dock_position.clone();
     let (card_w, card_h, thumb_w, thumb_h) = if config.compact_preview {
