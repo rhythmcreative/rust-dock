@@ -171,12 +171,13 @@ impl Dock {
         window.set_child(Some(&box_container));
 
         if let Some(monitor_name) = &cfg.output {
-            let display = gtk4::gdk::Display::default().expect("no display");
-            let monitors = display.monitors();
-            for i in 0..monitors.n_items() {
-                if let Some(m) = monitors.item(i).and_then(|m| m.downcast::<gtk4::gdk::Monitor>().ok()) {
-                    if m.connector().map(|c| c.to_string()).as_deref() == Some(monitor_name) {
-                        window.set_monitor(Some(&m)); break;
+            if let Some(display) = gtk4::gdk::Display::default() {
+                let monitors = display.monitors();
+                for i in 0..monitors.n_items() {
+                    if let Some(m) = monitors.item(i).and_then(|m| m.downcast::<gtk4::gdk::Monitor>().ok()) {
+                        if m.connector().map(|c| c.to_string()).as_deref() == Some(monitor_name) {
+                            window.set_monitor(Some(&m)); break;
+                        }
                     }
                 }
             }
@@ -231,13 +232,14 @@ impl Dock {
             }
 
             if let Some(monitor_name) = &cfg.output {
-                let display = gtk4::gdk::Display::default().expect("no display");
-                let monitors = display.monitors();
-                for i in 0..monitors.n_items() {
-                    if let Some(m) = monitors.item(i).and_then(|m| m.downcast::<gtk4::gdk::Monitor>().ok()) {
-                        if m.connector().map(|c| c.to_string()).as_deref() == Some(monitor_name) {
-                            det_win.set_monitor(Some(&m));
-                            break;
+                if let Some(display) = gtk4::gdk::Display::default() {
+                    let monitors = display.monitors();
+                    for i in 0..monitors.n_items() {
+                        if let Some(m) = monitors.item(i).and_then(|m| m.downcast::<gtk4::gdk::Monitor>().ok()) {
+                            if m.connector().map(|c| c.to_string()).as_deref() == Some(monitor_name) {
+                                det_win.set_monitor(Some(&m));
+                                break;
+                            }
                         }
                     }
                 }
@@ -313,13 +315,14 @@ impl Dock {
         }
 
         if let Some(monitor_name) = &cfg.output {
-            let display = gtk4::gdk::Display::default().expect("no display");
-            let monitors = display.monitors();
-            for i in 0..monitors.n_items() {
-                if let Some(m) = monitors.item(i).and_then(|m| m.downcast::<gtk4::gdk::Monitor>().ok()) {
-                    if m.connector().map(|c| c.to_string()).as_deref() == Some(monitor_name) {
-                        preview_win.set_monitor(Some(&m));
-                        break;
+            if let Some(display) = gtk4::gdk::Display::default() {
+                let monitors = display.monitors();
+                for i in 0..monitors.n_items() {
+                    if let Some(m) = monitors.item(i).and_then(|m| m.downcast::<gtk4::gdk::Monitor>().ok()) {
+                        if m.connector().map(|c| c.to_string()).as_deref() == Some(monitor_name) {
+                            preview_win.set_monitor(Some(&m));
+                            break;
+                        }
                     }
                 }
             }
@@ -553,6 +556,8 @@ impl Dock {
 
     fn refresh_with_preview(&self) {
         self.active_buttons.borrow_mut().clear();
+        // Window indices are stale after any rebuild, so reset cycling state.
+        CYCLE_IDX.with(|m| m.borrow_mut().clear());
         while let Some(child) = self.box_container.first_child() {
             self.box_container.remove(&child);
         }
@@ -1085,9 +1090,11 @@ fn ctx_menu_item(icon_name: &str, label: &str, close_style: bool) -> Button {
 }
 
 fn build_preview_content(
-    windows: &[HyprClient],
-    icon:    &Option<String>,
+    windows:  &[HyprClient],
+    icon:     &Option<String>,
     dock_pos: &str,
+    thumb_w:  i32,
+    thumb_h:  i32,
 ) -> Box {
     let orientation = match dock_pos {
         "left" | "right" => Orientation::Vertical,
@@ -1157,7 +1164,7 @@ fn build_preview_content(
             .vexpand(true)
             .css_classes(vec!["win-thumb-box".to_string()])
             .build();
-        thumb.set_size_request(260, 160);
+        thumb.set_size_request(thumb_w, thumb_h);
 
         let ico = create_icon_image(icon.as_deref().unwrap_or("application-x-executable"));
         ico.set_pixel_size(48);
@@ -1200,7 +1207,12 @@ fn update_preview_content(
     if windows.is_empty() { return; }
 
     let dock_pos = ps.borrow().dock_position.clone();
-    let content = build_preview_content(&windows, icon, &dock_pos);
+    let (card_w, card_h, thumb_w, thumb_h) = if config.compact_preview {
+        (204i32, 144i32, 200i32, 108i32)
+    } else {
+        (264i32, 196i32, 260i32, 160i32)
+    };
+    let content = build_preview_content(&windows, icon, &dock_pos, thumb_w, thumb_h);
 
     let mut s = ps.borrow_mut();
 
@@ -1236,8 +1248,6 @@ fn update_preview_content(
 
     let n = windows.len() as i32;
 
-    const CARD_W: i32 = 264;
-    const CARD_H: i32 = 196;  // 160 thumb + ~30 header + 2 border + 4 padding
     const PANEL_PAD: i32 = 8;
     const CARD_GAP: i32 = 8;
 
@@ -1250,25 +1260,25 @@ fn update_preview_content(
 
     match dock_pos.as_str() {
         "left" => {
-            let panel_h = n * CARD_H + (n - 1).max(0) * CARD_GAP + 2 * PANEL_PAD;
+            let panel_h = n * card_h + (n - 1).max(0) * CARD_GAP + 2 * PANEL_PAD;
             let max_top = (monitor_h - panel_h).max(0);
             s.win.set_margin(Edge::Top, (by + bh / 2 - panel_h / 2).clamp(0, max_top));
             s.win.set_margin(Edge::Left, margin_left + dock_w + 6);
         }
         "right" => {
-            let panel_h = n * CARD_H + (n - 1).max(0) * CARD_GAP + 2 * PANEL_PAD;
+            let panel_h = n * card_h + (n - 1).max(0) * CARD_GAP + 2 * PANEL_PAD;
             let max_top = (monitor_h - panel_h).max(0);
             s.win.set_margin(Edge::Top, (by + bh / 2 - panel_h / 2).clamp(0, max_top));
             s.win.set_margin(Edge::Right, margin_right + dock_w + 6);
         }
         "top" => {
-            let panel_w = n * CARD_W + (n - 1).max(0) * CARD_GAP + 2 * PANEL_PAD;
+            let panel_w = n * card_w + (n - 1).max(0) * CARD_GAP + 2 * PANEL_PAD;
             let max_left = (monitor_w - panel_w).max(0);
             s.win.set_margin(Edge::Left, (bx + bw / 2 - panel_w / 2).clamp(0, max_left));
             s.win.set_margin(Edge::Top, margin_top + dock_h + 6);
         }
         _ => {
-            let panel_w = n * CARD_W + (n - 1).max(0) * CARD_GAP + 2 * PANEL_PAD;
+            let panel_w = n * card_w + (n - 1).max(0) * CARD_GAP + 2 * PANEL_PAD;
             let max_left = (monitor_w - panel_w).max(0);
             s.win.set_margin(Edge::Left, (bx + bw / 2 - panel_w / 2).clamp(0, max_left));
             s.win.set_margin(Edge::Bottom, margin_bottom + dock_h + 6);
@@ -1414,15 +1424,22 @@ fn spawn_screenshot_updates(
     });
 }
 
+const MAX_CONCURRENT_CAPTURES: usize = 4;
+
 fn spawn_pending_captures(
     windows: &Rc<Vec<HyprClient>>,
     tx:      &mpsc::Sender<(usize, String)>,
     pending: &Arc<std::sync::Mutex<Vec<bool>>>,
 ) {
     let mut pend = pending.lock().unwrap();
+    let in_progress = pend.iter().filter(|&&p| p).count();
+    let mut slots = MAX_CONCURRENT_CAPTURES.saturating_sub(in_progress);
+
     for (idx, win) in windows.iter().enumerate() {
+        if slots == 0 { break; }
         if !pend[idx] {
             pend[idx] = true;
+            slots -= 1;
             let tx2   = tx.clone();
             let addr  = win.address.clone();
             let sid   = win.stable_id.clone();

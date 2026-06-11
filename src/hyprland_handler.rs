@@ -18,6 +18,12 @@ pub fn invalidate_client_cache() {
     CLIENT_CACHE.with(|c| *c.borrow_mut() = None);
 }
 
+/// Discard the cached gaps_out value so the next call re-fetches from Hyprland.
+/// Call this when Hyprland's config is reloaded.
+pub fn invalidate_gaps_cache() {
+    GAPS_OUT.with(|c| c.set(None));
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct HyprClient {
     pub address: String,
@@ -50,6 +56,8 @@ pub enum DockEvent {
     Focus(String),
     /// Active workspace changed or workspaces were created/destroyed.
     Workspace,
+    /// Hyprland config was reloaded (e.g. `hyprctl reload`).
+    ConfigReloaded,
 }
 
 /// A Hyprland workspace with its window count.
@@ -218,17 +226,6 @@ impl HyprlandHandler {
             .map(|s| s.to_lowercase())
     }
 
-    /// The address of the currently focused window (e.g. "0x1234abcd").
-    pub fn get_active_address(&self) -> Option<String> {
-        let out = Command::new("hyprctl").arg("activewindow").arg("-j").output().ok()?;
-        if !out.status.success() { return None; }
-        let json: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
-        json.get("address")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-    }
-
     /// All open workspaces, sorted by ID.
     #[allow(dead_code)]
     pub fn get_workspaces(&self) -> Vec<HyprWorkspaceInfo> {
@@ -273,7 +270,7 @@ pub fn capture_window_screenshot(address: &str, stable_id: &Option<String>, at: 
     }
 
     let clean_addr = address.trim_start_matches("0x");
-    let temp_path = format!("/tmp/rust-dock-preview-{}.png", clean_addr);
+    let temp_path = format!("/tmp/rust-dock/{}.png", clean_addr);
 
     // Use scale 0.25 for fast captures at preview-appropriate resolution
     // PNG level 0 = no compression (fastest encode)
@@ -371,6 +368,8 @@ where
             || line.starts_with("focusedmon>>")
         {
             on_event(DockEvent::Workspace);
+        } else if line.starts_with("configreloaded>>") {
+            on_event(DockEvent::ConfigReloaded);
         } else if let Some(class) = parse_active_class(&line) {
             on_event(DockEvent::Focus(class));
         }

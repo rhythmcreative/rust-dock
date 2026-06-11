@@ -87,7 +87,12 @@ impl AppInfo {
         let class_lower = class.to_lowercase();
         let class_desktop = format!("{}.desktop", class_lower);
 
-        // First pass: try exact filename match
+        // Single pass: filename match is returned immediately (highest priority);
+        // WMClass match is collected as a fallback for apps whose desktop filename
+        // differs from their Wayland class (e.g. "code-oss.desktop" for class "code").
+        // This avoids two full directory scans while preserving the same priority order.
+        let mut wm_class_match: Option<Self> = None;
+
         for path in Iter::new(Self::get_search_paths().into_iter()) {
             let filename = path.file_name().and_then(|s| s.to_str()).unwrap_or_default().to_lowercase();
             if filename == class_desktop {
@@ -95,21 +100,18 @@ impl AppInfo {
                     return Some(AppInfo::from_entry(class, &entry));
                 }
             }
-        }
-
-        // Second pass: try reading StartupWMClass from each desktop entry
-        // (some apps have class different from their desktop filename)
-        for path in Iter::new(Self::get_search_paths().into_iter()) {
-            if let Ok(entry) = DesktopEntry::from_path(&path, None::<&[&str]>) {
-                if let Some(wm_class) = entry.startup_wm_class() {
-                    if wm_class.to_lowercase() == class_lower {
-                        return Some(AppInfo::from_entry(class, &entry));
+            if wm_class_match.is_none() {
+                if let Ok(entry) = DesktopEntry::from_path(&path, None::<&[&str]>) {
+                    if let Some(wm_class) = entry.startup_wm_class() {
+                        if wm_class.to_lowercase() == class_lower {
+                            wm_class_match = Some(AppInfo::from_entry(class, &entry));
+                        }
                     }
                 }
             }
         }
 
-        None
+        wm_class_match
     }
 
     fn from_entry(class: &str, entry: &DesktopEntry) -> Self {

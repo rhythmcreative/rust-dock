@@ -11,22 +11,16 @@ use clap::Parser;
 use cli::Cli;
 use config::Config;
 use dock::Dock;
-use hyprland_handler::{DockEvent, invalidate_client_cache};
+use hyprland_handler::{DockEvent, invalidate_client_cache, invalidate_gaps_cache};
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 
-/// Remove stale window-preview screenshots left in /tmp from a previous run.
+/// Remove stale window-preview screenshots and recreate the work directory.
 fn cleanup_preview_tmp() {
-    if let Ok(entries) = std::fs::read_dir("/tmp") {
-        for entry in entries.flatten() {
-            if let Some(name) = entry.file_name().to_str() {
-                if name.starts_with("rust-dock-preview-") && name.ends_with(".png") {
-                    let _ = std::fs::remove_file(entry.path());
-                }
-            }
-        }
-    }
+    let dir = std::path::Path::new("/tmp/rust-dock");
+    let _ = std::fs::remove_dir_all(dir);
+    let _ = std::fs::create_dir_all(dir);
 }
 
 fn main() {
@@ -111,19 +105,21 @@ fn main() {
         let dock_hypr = Rc::clone(&dock);
         let rx_hypr = Arc::new(Mutex::new(rx_hypr));
         glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
-            let (window_changed, workspace_changed, last_focus) = {
+            let (window_changed, workspace_changed, last_focus, cfg_reloaded) = {
                 let Ok(rx) = rx_hypr.lock() else { return glib::ControlFlow::Continue; };
                 let mut changed = false;
                 let mut ws_changed = false;
                 let mut focus = None;
+                let mut cfg_reload = false;
                 while let Ok(ev) = rx.try_recv() {
                     match ev {
                         DockEvent::WindowList       => changed = true,
                         DockEvent::Workspace        => ws_changed = true,
                         DockEvent::Focus(class)     => focus = Some(class),
+                        DockEvent::ConfigReloaded   => cfg_reload = true,
                     }
                 }
-                (changed, ws_changed, focus)
+                (changed, ws_changed, focus, cfg_reload)
             };
             if window_changed {
                 // Discard the client cache so both rebuilds fetch fresh data.
@@ -148,6 +144,9 @@ fn main() {
             }
             if let Some(class) = last_focus {
                 dock_hypr.update_active(&class);
+            }
+            if cfg_reloaded {
+                invalidate_gaps_cache();
             }
             glib::ControlFlow::Continue
         });
@@ -252,7 +251,12 @@ fn main() {
         let (tx_sig, rx_sig) = std::sync::mpsc::channel::<i32>();
         std::thread::spawn(move || {
             use signal_hook::iterator::Signals;
-            if let Ok(mut signals) = Signals::new(&[signal_hook::consts::SIGUSR1, signal_hook::consts::SIGUSR2]) {
+            if let Ok(mut signals) = Signals::new(&[
+                signal_hook::consts::SIGUSR1,
+                signal_hook::consts::SIGUSR2,
+                signal_hook::consts::SIGTERM,
+                signal_hook::consts::SIGINT,
+            ]) {
                 for signal in signals.forever() {
                     let _ = tx_sig.send(signal);
                 }
@@ -260,6 +264,7 @@ fn main() {
         });
 
         let dock_signal = Rc::clone(&dock);
+        let app_quit = app.clone();
         let rx_sig = Arc::new(Mutex::new(rx_sig));
         glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
             let Ok(rx) = rx_sig.lock() else { return glib::ControlFlow::Continue; };
@@ -268,6 +273,10 @@ fn main() {
                     dock_signal.toggle_visibility();
                 } else if sig == signal_hook::consts::SIGUSR2 {
                     dock_signal.set_dock_visible(true);
+                } else {
+                    // SIGTERM / SIGINT: clean up screenshots and exit gracefully.
+                    let _ = std::fs::remove_dir_all("/tmp/rust-dock");
+                    app_quit.quit();
                 }
             }
             glib::ControlFlow::Continue

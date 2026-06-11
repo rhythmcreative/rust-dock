@@ -2,6 +2,10 @@
 name = "rust-dock"
 version = "0.1.0"
 edition = "2024"
+description = "A modern Wayland dock for Hyprland"
+license = "MIT"
+repository = "https://github.com/rhythmcreative/rust-dock"
+keywords = ["hyprland", "wayland", "dock", "gtk4"]
 
 [dependencies]
 clap = { version = "4.6.1", features = ["derive"] }
@@ -12,7 +16,6 @@ gio = "0.22.6"
 glib = { version = "0.22.7", features = ["v2_76"] }
 gtk4 = { version = "0.11.3", features = ["v4_8"] }
 gtk4-layer-shell = "0.8.0"
-hyprland = "0.3.13"
 log = "0.4.32"
 notify = "8.2.0"
 rust-ini = "0.21.3"

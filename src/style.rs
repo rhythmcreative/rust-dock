@@ -152,7 +152,7 @@ pub fn load_css(config: &Config) {
             border-radius: {card_radius}px;
             border: 1px solid alpha(@color1, 0.22);
             background-color: alpha(@background, 0.95);
-            min-width: 260px;
+            min-width: {card_min_w}px;
             box-shadow: 0 4px 16px rgba(0,0,0,0.45);
             transition: border-color 140ms ease, box-shadow 140ms ease;
         }}
@@ -191,8 +191,8 @@ pub fn load_css(config: &Config) {
         /* Thumbnail area. */
         .win-thumb-box {{
             background-color: alpha(#000000, 0.25);
-            min-height: 160px;
-            min-width: 260px;
+            min-height: {thumb_min_h}px;
+            min-width: {thumb_min_w}px;
         }}
         .win-thumbnail {{ border-radius: 0; }}
         .preview-placeholder {{ opacity: 0.28; }}
@@ -314,7 +314,10 @@ pub fn load_css(config: &Config) {
     btn_radius = config.radius - 2,
     ws_radius = (config.radius - 2).max(4),
     preview_radius = config.radius + 4,
-    card_radius = (config.radius + 6).max(16)
+    card_radius = (config.radius + 6).max(16),
+    card_min_w = if config.compact_preview { 200 } else { 260 },
+    thumb_min_h = if config.compact_preview { 108 } else { 160 },
+    thumb_min_w = if config.compact_preview { 200 } else { 260 },
     );
 
     css_data.push_str(&default_css);
