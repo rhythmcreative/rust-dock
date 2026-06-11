@@ -936,7 +936,11 @@ impl Dock {
             let exec = app_exec_m.clone();
             new_win_item.connect_clicked(move |_| {
                 if !exec.is_empty() {
-                    if let Err(e) = std::process::Command::new("sh").arg("-c").arg(&exec).spawn() {
+                    let clean = crate::app_info::clean_exec_pub(&exec);
+                    if let Err(e) = std::process::Command::new("hyprctl")
+                        .args(["dispatch", "exec", &format!("[float;center 1] {}", clean)])
+                        .spawn()
+                    {
                         log::warn!("Failed to launch new window: {e}");
                     }
                 }

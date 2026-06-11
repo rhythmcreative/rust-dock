@@ -127,7 +127,13 @@ impl AppInfo {
     pub fn launch(&self) {
         let exec = clean_exec(&self.exec);
 
-        if let Err(e) = Command::new("sh").arg("-c").arg(&exec).spawn() {
+        // [float] makes the new window open as floating so it can be freely
+        // dragged to any position. Without this, Hyprland tiles the window and
+        // it can only be moved with Super+drag.
+        if let Err(e) = Command::new("hyprctl")
+            .args(["dispatch", "exec", &format!("[float;center 1] {}", exec)])
+            .spawn()
+        {
             log::error!("Failed to launch {}: {}", self.name, e);
         }
     }
@@ -161,6 +167,8 @@ fn resolve_icon_name(icon: &str) -> String {
 }
 
 /// Strip desktop-entry field codes (`%u`, `%f`, …) from an Exec line.
+pub fn clean_exec_pub(exec: &str) -> String { clean_exec(exec) }
+
 fn clean_exec(exec: &str) -> String {
     exec.split_whitespace()
         .filter(|s| !s.starts_with('%'))

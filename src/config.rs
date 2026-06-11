@@ -190,13 +190,19 @@ impl Config {
     /// reordering of pinned apps), then persist the new order.
     pub fn reorder_pinned(&mut self, dragged: &str, target: &str) {
         if dragged == target { return; }
-        let Some(from) = self.pinned_apps.iter().position(|a| a == dragged) else { return; };
+        let Some(from)     = self.pinned_apps.iter().position(|a| a == dragged) else { return; };
+        let Some(to_orig)  = self.pinned_apps.iter().position(|a| a == target)  else { return; };
         let item = self.pinned_apps.remove(from);
+        // After removing `from`, every index > from shifts left by 1.
+        // Re-find the target's new index, then compensate: when dragging
+        // rightward (from < to_orig) insert *after* the target so the item
+        // lands exactly at to_orig instead of one slot short.
         let to = self.pinned_apps
             .iter()
             .position(|a| a == target)
             .unwrap_or(self.pinned_apps.len());
-        self.pinned_apps.insert(to, item);
+        let insert_at = if from < to_orig { to + 1 } else { to };
+        self.pinned_apps.insert(insert_at.min(self.pinned_apps.len()), item);
         self.save_pinned_apps();
     }
 }
