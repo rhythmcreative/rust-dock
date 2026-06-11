@@ -62,7 +62,7 @@ All the windows change in real time, you can see that the window plays at 30 fps
 <img width="508" height="82" alt="rec_20260611_213323" src="https://github.com/user-attachments/assets/64dbe9a0-42bd-4877-8b7d-ca903e0a411d" />
 
 
-[![Typing SVG](https://readme-typing-svg.herokuapp.com?font=Fira+Code&pause=1000&color=F7F7F7&vCenter=true&multiline=true&width=435&height=35&lines=INSTALLATION)](https://git.io/typing-svg)
+[![Typing SVG](https://readme-typing-svg.herokuapp.com?font=Fira+Code&pause=1000&color=F7F7F7&vCenter=true&multiline=true&width=435&height=35&lines=INSTALL)](https://git.io/typing-svg)
 
 For installation it is done through the commands below
 
