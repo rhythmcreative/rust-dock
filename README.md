@@ -136,3 +136,9 @@ Options:
 <div align="center">
  <p><i>Hope you enjoy it :) </i></p>
 </div>
+
+[![Typing SVG](https://readme-typing-svg.herokuapp.com?font=Fira+Code&pause=1000&color=F7F7F7&vCenter=true&multiline=true&width=435&height=35&lines=OTHER+PROYECTS)](https://git.io/typing-svg)
+
+[Hyprland Rice)](https://github.com/rhythmcreative/hyprland)
+
+[Tiktok GUI)](https://github.com/rhythmcreative/tiktok)
