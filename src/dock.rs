@@ -982,20 +982,14 @@ impl Dock {
                     MINIMIZED.with(|m| {
                         let mut map = m.borrow_mut();
                         for win in &wins {
-                            map.insert(win.address.clone(), (!win.floating, win.at));
+                            map.insert(win.address.clone(),
+                                (win.workspace.id, win.floating, win.at, win.size));
                         }
                     });
                     for win in &wins {
-                        // Tiled windows must be floated first so they can be moved off-screen.
-                        if !win.floating {
-                            let _ = std::process::Command::new("hyprctl")
-                                .args(["dispatch", "setfloating",
-                                       &format!("address:{}", win.address)])
-                                .spawn();
-                        }
                         let _ = std::process::Command::new("hyprctl")
-                            .args(["dispatch", "movewindowpixel",
-                                   &format!("exact 30000 30000,address:{}", win.address)])
+                            .args(["dispatch", "movetoworkspacesilent",
+                                   &format!("special:minimized,address:{}", win.address)])
                             .spawn();
                     }
                     pop_min.popdown();
@@ -1105,9 +1099,8 @@ thread_local! {
     static CYCLE_IDX: RefCell<std::collections::HashMap<String, usize>> =
         RefCell::new(std::collections::HashMap::new());
 
-    /// Tracks minimized windows: address → (was_tiled, original_at).
-    /// Minimized windows are moved off-screen; clicking the icon restores them.
-    static MINIMIZED: RefCell<std::collections::HashMap<String, (bool, [i32; 2])>> =
+    /// Tracks minimized windows: address → (original_workspace_id, floating, at, size).
+    static MINIMIZED: RefCell<std::collections::HashMap<String, (i32, bool, [i32; 2], [i32; 2])>> =
         RefCell::new(std::collections::HashMap::new());
 }
 
@@ -1122,26 +1115,32 @@ fn focus_or_launch(app: &AppInfo) {
         return;
     }
 
-    // Restore off-screen minimized windows. Tiled windows get re-tiled;
-    // floating windows move back to their original position.
-    let to_restore: Vec<(String, bool, [i32; 2])> = MINIMIZED.with(|m| {
+    // Restore minimized windows (dms-minimize approach):
+    // movetoworkspace to the ORIGINAL workspace — never touches special:minimized visually.
+    let to_restore: Vec<(String, i32, bool, [i32; 2], [i32; 2])> = MINIMIZED.with(|m| {
         let map = m.borrow();
         windows.iter()
-            .filter_map(|w| map.get(&w.address).map(|(tiled, at)| (w.address.clone(), *tiled, *at)))
+            .filter_map(|w| map.get(&w.address)
+                .map(|(ws, fl, at, sz)| (w.address.clone(), *ws, *fl, *at, *sz)))
             .collect()
     });
     if !to_restore.is_empty() {
         let first_addr = to_restore[0].0.clone();
-        MINIMIZED.with(|m| m.borrow_mut().retain(|k, _| !to_restore.iter().any(|(a,_,_)| a == k)));
-        for (addr, was_tiled, at) in &to_restore {
-            if *was_tiled {
-                let _ = std::process::Command::new("hyprctl")
-                    .args(["dispatch", "settiled", &format!("address:{}", addr)])
-                    .spawn();
-            } else {
+        MINIMIZED.with(|m| m.borrow_mut().retain(|k, _| !to_restore.iter().any(|(a,_,_,_,_)| a == k)));
+        for (addr, ws_id, floating, at, size) in &to_restore {
+            // Non-silent move to original workspace — switches there, never shows special ws.
+            let _ = std::process::Command::new("hyprctl")
+                .args(["dispatch", "movetoworkspace",
+                       &format!("{},address:{}", ws_id, addr)])
+                .spawn();
+            if *floating {
                 let _ = std::process::Command::new("hyprctl")
                     .args(["dispatch", "movewindowpixel",
                            &format!("exact {} {},address:{}", at[0], at[1], addr)])
+                    .spawn();
+                let _ = std::process::Command::new("hyprctl")
+                    .args(["dispatch", "resizewindowpixel",
+                           &format!("exact {} {},address:{}", size[0], size[1], addr)])
                     .spawn();
             }
         }
