@@ -981,7 +981,7 @@ impl Dock {
                     for win in HyprlandHandler::new().get_clients_for_class(&class_min) {
                         let _ = std::process::Command::new("hyprctl")
                             .args(["dispatch", "movetoworkspacesilent",
-                                   &format!("special:minimized,address:{}", win.address)])
+                                   &format!("special:_rdock,address:{}", win.address)])
                             .spawn();
                     }
                     pop_min.popdown();
@@ -1103,21 +1103,19 @@ fn focus_or_launch(app: &AppInfo) {
         return;
     }
 
-    // Restore any minimized windows (special workspace) to the current workspace.
+    // Restore minimized windows (in our private special workspace) to the current
+    // workspace. movetoworkspace (non-silent) moves + focuses in one dispatch so
+    // Hyprland never shows the special workspace to the user.
     let minimized: Vec<_> = windows.iter()
-        .filter(|w| w.workspace.name.starts_with("special:"))
+        .filter(|w| w.workspace.name == "special:_rdock")
         .collect();
     if !minimized.is_empty() {
         for win in &minimized {
             let _ = std::process::Command::new("hyprctl")
-                .args(["dispatch", "movetoworkspacesilent",
+                .args(["dispatch", "movetoworkspace",
                        &format!("current,address:{}", win.address)])
                 .spawn();
         }
-        let addr = minimized[0].address.clone();
-        let _ = std::process::Command::new("hyprctl")
-            .args(["dispatch", "focuswindow", &format!("address:{}", addr)])
-            .spawn();
         return;
     }
 
