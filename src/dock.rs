@@ -1071,25 +1071,20 @@ impl Dock {
                             });
                         MINIMIZED.with(|m| m.borrow_mut()
                             .retain(|k, _| !to_restore.iter().any(|(a,_,_,_,_)| a == k)));
+                        let mut batch: Vec<String> = Vec::new();
                         for (addr, ws_id, floating, at, size) in &to_restore {
-                            let _ = std::process::Command::new("hyprctl")
-                                .args(["dispatch", "movetoworkspace",
-                                       &format!("{},address:{}", ws_id, addr)])
-                                .spawn();
+                            batch.push(format!("dispatch movetoworkspacesilent {},address:{}", ws_id, addr));
                             if *floating {
-                                let _ = std::process::Command::new("hyprctl")
-                                    .args(["dispatch", "movewindowpixel",
-                                           &format!("exact {} {},address:{}", at[0], at[1], addr)])
-                                    .spawn();
-                                let _ = std::process::Command::new("hyprctl")
-                                    .args(["dispatch", "resizewindowpixel",
-                                           &format!("exact {} {},address:{}", size[0], size[1], addr)])
-                                    .spawn();
+                                batch.push(format!("dispatch movewindowpixel exact {} {},address:{}", at[0], at[1], addr));
+                                batch.push(format!("dispatch resizewindowpixel exact {} {},address:{}", size[0], size[1], addr));
                             }
                         }
                         if let Some((addr, _, _, _, _)) = to_restore.first() {
+                            batch.push(format!("dispatch focuswindow address:{}", addr));
+                        }
+                        if !batch.is_empty() {
                             let _ = std::process::Command::new("hyprctl")
-                                .args(["dispatch", "focuswindow", &format!("address:{}", addr)])
+                                .args(["--batch", &batch.join(" ; ")])
                                 .spawn();
                         }
                         pop_rst.popdown();
@@ -1233,25 +1228,18 @@ fn focus_or_launch(app: &AppInfo) {
     if !to_restore.is_empty() {
         let first_addr = to_restore[0].0.clone();
         MINIMIZED.with(|m| m.borrow_mut().retain(|k, _| !to_restore.iter().any(|(a,_,_,_,_)| a == k)));
+        // --batch keeps commands sequential so focuswindow never races movetoworkspace.
+        let mut batch: Vec<String> = Vec::new();
         for (addr, ws_id, floating, at, size) in &to_restore {
-            // Non-silent move to original workspace — switches there, never shows special ws.
-            let _ = std::process::Command::new("hyprctl")
-                .args(["dispatch", "movetoworkspace",
-                       &format!("{},address:{}", ws_id, addr)])
-                .spawn();
+            batch.push(format!("dispatch movetoworkspacesilent {},address:{}", ws_id, addr));
             if *floating {
-                let _ = std::process::Command::new("hyprctl")
-                    .args(["dispatch", "movewindowpixel",
-                           &format!("exact {} {},address:{}", at[0], at[1], addr)])
-                    .spawn();
-                let _ = std::process::Command::new("hyprctl")
-                    .args(["dispatch", "resizewindowpixel",
-                           &format!("exact {} {},address:{}", size[0], size[1], addr)])
-                    .spawn();
+                batch.push(format!("dispatch movewindowpixel exact {} {},address:{}", at[0], at[1], addr));
+                batch.push(format!("dispatch resizewindowpixel exact {} {},address:{}", size[0], size[1], addr));
             }
         }
+        batch.push(format!("dispatch focuswindow address:{}", first_addr));
         let _ = std::process::Command::new("hyprctl")
-            .args(["dispatch", "focuswindow", &format!("address:{}", first_addr)])
+            .args(["--batch", &batch.join(" ; ")])
             .spawn();
         return;
     }
