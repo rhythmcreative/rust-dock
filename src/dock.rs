@@ -702,15 +702,39 @@ impl Dock {
         let pinned_lower: std::collections::HashSet<String> =
             pinned_apps.iter().map(|s| s.to_lowercase()).collect();
 
+        // Also include non-pinned apps that are minimized but not yet in running_ordered
+        // (timing: get_clients() cache may not yet reflect the move to special:minimized).
+        let already_shown: std::collections::HashSet<String> =
+            running_ordered.iter().map(|(k, _)| k.clone()).collect();
+        let extra_minimized: Vec<(String, AppInfo)> = MINIMIZED.with(|m| {
+            m.borrow().values()
+                .map(|(_, _, _, _, class)| class.clone())
+                .filter(|cls| !already_shown.contains(cls) && !pinned_lower.contains(cls))
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .filter_map(|cls| AppInfo::find_by_class(&cls).map(|a| (cls, a)))
+                .collect()
+        });
+        // Merge: real running_ordered + ghost minimized entries.
+        let mut all_to_show: Vec<(String, AppInfo)> = running_ordered.clone();
+        all_to_show.extend(extra_minimized);
+
         // Collect non-pinned running apps
         let mut has_running = false;
-        for (class_key, app) in &running_ordered {
+        for (class_key, app) in &all_to_show {
             if pinned_lower.contains(class_key) || pinned_lower.contains(&app.id) {
                 continue;
             }
             let instances = match app_counts.get(class_key) {
                 Some(&n) => n,
-                None => continue,
+                None => {
+                    // Window is in special:minimized — count from MINIMIZED map.
+                    let n = MINIMIZED.with(|m| {
+                        m.borrow().values().filter(|(_, _, _, _, cls)| cls == class_key).count()
+                    });
+                    if n == 0 { continue; }
+                    n
+                }
             };
 
             self.add_app_button(app, instances, false,
@@ -776,6 +800,15 @@ impl Dock {
         vbox.append(&indicator);
         btn.set_child(Some(&vbox));
         btn.set_tooltip_text(Some(&app.name));
+
+        // Visual: faded if ALL windows are minimized (like Windows 11 minimized taskbar icons).
+        let all_minimized = instances > 0 && MINIMIZED.with(|m| {
+            let map = m.borrow();
+            HyprlandHandler::new().get_clients_for_class(&app.id)
+                .iter()
+                .all(|w| map.contains_key(&w.address))
+        });
+        if all_minimized { btn.add_css_class("app-minimized"); }
 
         let show_delay = config.borrow().show_delay as u64;
         let hide_delay = config.borrow().hide_delay as u64;
@@ -1001,7 +1034,8 @@ impl Dock {
                             let mut map = m.borrow_mut();
                             for win in &to_min {
                                 map.insert(win.address.clone(),
-                                    (win.workspace.id, win.floating, win.at, win.size));
+                                    (win.workspace.id, win.floating, win.at, win.size,
+                                     win.class.to_lowercase()));
                             }
                         });
                         for win in &to_min {
@@ -1012,7 +1046,8 @@ impl Dock {
                         }
                         pop_min.popdown();
                         let dw = dw_min.clone();
-                        glib::idle_add_local_once(move || {
+                        glib::timeout_add_local_once(std::time::Duration::from_millis(450), move || {
+                            crate::hyprland_handler::invalidate_client_cache();
                             if let Some(dock) = dw.upgrade() { dock.refresh(); }
                         });
                     });
@@ -1031,7 +1066,7 @@ impl Dock {
                                 let map = m.borrow();
                                 wins.iter()
                                     .filter_map(|w| map.get(&w.address)
-                                        .map(|(ws, fl, at, sz)| (w.address.clone(), *ws, *fl, *at, *sz)))
+                                        .map(|(ws, fl, at, sz, _)| (w.address.clone(), *ws, *fl, *at, *sz)))
                                     .collect()
                             });
                         MINIMIZED.with(|m| m.borrow_mut()
@@ -1059,7 +1094,8 @@ impl Dock {
                         }
                         pop_rst.popdown();
                         let dw = dw_rst.clone();
-                        glib::idle_add_local_once(move || {
+                        glib::timeout_add_local_once(std::time::Duration::from_millis(450), move || {
+                            crate::hyprland_handler::invalidate_client_cache();
                             if let Some(dock) = dw.upgrade() { dock.refresh(); }
                         });
                     });
@@ -1169,8 +1205,8 @@ thread_local! {
     static CYCLE_IDX: RefCell<std::collections::HashMap<String, usize>> =
         RefCell::new(std::collections::HashMap::new());
 
-    /// Tracks minimized windows: address → (original_workspace_id, floating, at, size).
-    static MINIMIZED: RefCell<std::collections::HashMap<String, (i32, bool, [i32; 2], [i32; 2])>> =
+    /// Tracks minimized windows: address → (original_workspace_id, floating, at, size, class).
+    static MINIMIZED: RefCell<std::collections::HashMap<String, (i32, bool, [i32; 2], [i32; 2], String)>> =
         RefCell::new(std::collections::HashMap::new());
 }
 
@@ -1191,7 +1227,7 @@ fn focus_or_launch(app: &AppInfo) {
         let map = m.borrow();
         windows.iter()
             .filter_map(|w| map.get(&w.address)
-                .map(|(ws, fl, at, sz)| (w.address.clone(), *ws, *fl, *at, *sz)))
+                .map(|(ws, fl, at, sz, _)| (w.address.clone(), *ws, *fl, *at, *sz)))
             .collect()
     });
     if !to_restore.is_empty() {

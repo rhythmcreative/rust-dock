@@ -117,6 +117,12 @@ pub fn load_css(config: &Config) {
             color: @color1;
             margin-top: -2px;
         }}
+        button.app-minimized {{
+            opacity: 0.5;
+        }}
+        button.app-minimized .indicator {{
+            color: @color8;
+        }}
 
         /* ── Preview window (dock-preview layer surface) ──── */
         /* GTK4 adds a `decoration` node for CSD shadows even when set_decorated(false).
