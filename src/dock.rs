@@ -1104,7 +1104,8 @@ impl Dock {
                                 batch.push(format!("dispatch resizewindowpixel exact {} {},address:{}", size[0], size[1], addr));
                             }
                         }
-                        if let Some((addr, _, _, _, _)) = to_restore.first() {
+                        if let Some((addr, ws_id, _, _, _)) = to_restore.first() {
+                            batch.push(format!("dispatch workspace {}", ws_id));
                             batch.push(format!("dispatch focuswindow address:{}", addr));
                         }
                         if !batch.is_empty() {
@@ -1280,9 +1281,9 @@ fn focus_or_launch(app: &AppInfo) {
     });
     if !to_restore.is_empty() {
         let first_addr = to_restore[0].0.clone();
+        let first_ws   = to_restore[0].1;
         MINIMIZED.with(|m| m.borrow_mut().retain(|k, _| !to_restore.iter().any(|(a,_,_,_,_)| a == k)));
         save_minimized_state();
-        // --batch keeps commands sequential so focuswindow never races movetoworkspace.
         let mut batch: Vec<String> = Vec::new();
         for (addr, ws_id, floating, at, size) in &to_restore {
             batch.push(format!("dispatch movetoworkspacesilent {},address:{}", ws_id, addr));
@@ -1291,6 +1292,8 @@ fn focus_or_launch(app: &AppInfo) {
                 batch.push(format!("dispatch resizewindowpixel exact {} {},address:{}", size[0], size[1], addr));
             }
         }
+        // Explicit workspace switch — focuswindow alone doesn't always change workspace.
+        batch.push(format!("dispatch workspace {}", first_ws));
         batch.push(format!("dispatch focuswindow address:{}", first_addr));
         let _ = std::process::Command::new("hyprctl")
             .args(["--batch", &batch.join(" ; ")])
