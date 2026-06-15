@@ -970,9 +970,24 @@ impl Dock {
             });
             menu_box.append(&pin_item);
 
-            // ── Close all windows ──────────────────────────────────────
+            // ── Minimize / Close (only when windows are open) ─────────
             if instances > 0 {
                 menu_box.append(&gtk4::Separator::new(Orientation::Horizontal));
+
+                let min_item  = ctx_menu_item("view-restore-symbolic", "Minimize all", false);
+                let class_min = app_class_m.clone();
+                let pop_min   = menu_pop.clone();
+                min_item.connect_clicked(move |_| {
+                    for win in HyprlandHandler::new().get_clients_for_class(&class_min) {
+                        let _ = std::process::Command::new("hyprctl")
+                            .args(["dispatch", "movetoworkspacesilent",
+                                   &format!("special:minimized,address:{}", win.address)])
+                            .spawn();
+                    }
+                    pop_min.popdown();
+                });
+                menu_box.append(&min_item);
+
                 let close_item = ctx_menu_item("window-close-symbolic", "Close all windows", true);
                 let class_c = app_class_m.clone();
                 let pop_r2  = menu_pop.clone();
