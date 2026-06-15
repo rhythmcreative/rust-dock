@@ -970,31 +970,101 @@ impl Dock {
             });
             menu_box.append(&pin_item);
 
-            // ── Minimize / Close (only when windows are open) ─────────
+            // ── Minimize / Restore / Close (only when windows are open) ──
             if instances > 0 {
                 menu_box.append(&gtk4::Separator::new(Orientation::Horizontal));
 
-                let min_item  = ctx_menu_item("view-restore-symbolic", "Minimize all", false);
-                let class_min = app_class_m.clone();
-                let pop_min   = menu_pop.clone();
-                min_item.connect_clicked(move |_| {
-                    let wins = HyprlandHandler::new().get_clients_for_class(&class_min);
-                    MINIMIZED.with(|m| {
-                        let mut map = m.borrow_mut();
-                        for win in &wins {
-                            map.insert(win.address.clone(),
-                                (win.workspace.id, win.floating, win.at, win.size));
-                        }
-                    });
-                    for win in &wins {
-                        let _ = std::process::Command::new("hyprctl")
-                            .args(["dispatch", "movetoworkspacesilent",
-                                   &format!("special:minimized,address:{}", win.address)])
-                            .spawn();
-                    }
-                    pop_min.popdown();
+                // Count how many windows of this app are currently minimized.
+                let minimized_count = MINIMIZED.with(|m| {
+                    let map = m.borrow();
+                    HyprlandHandler::new()
+                        .get_clients_for_class(&app_class_m)
+                        .iter()
+                        .filter(|w| map.contains_key(&w.address))
+                        .count()
                 });
-                menu_box.append(&min_item);
+                let active_count = instances.saturating_sub(minimized_count);
+                let dock_weak_min = self.self_weak.borrow().clone();
+
+                if active_count > 0 {
+                    let min_item  = ctx_menu_item("view-restore-symbolic", "Minimize all", false);
+                    let class_min = app_class_m.clone();
+                    let pop_min   = menu_pop.clone();
+                    let dw_min    = dock_weak_min.clone();
+                    min_item.connect_clicked(move |_| {
+                        let wins = HyprlandHandler::new().get_clients_for_class(&class_min);
+                        let to_min: Vec<_> = MINIMIZED.with(|m| {
+                            let map = m.borrow();
+                            wins.into_iter().filter(|w| !map.contains_key(&w.address)).collect()
+                        });
+                        MINIMIZED.with(|m| {
+                            let mut map = m.borrow_mut();
+                            for win in &to_min {
+                                map.insert(win.address.clone(),
+                                    (win.workspace.id, win.floating, win.at, win.size));
+                            }
+                        });
+                        for win in &to_min {
+                            let _ = std::process::Command::new("hyprctl")
+                                .args(["dispatch", "movetoworkspacesilent",
+                                       &format!("special:minimized,address:{}", win.address)])
+                                .spawn();
+                        }
+                        pop_min.popdown();
+                        let dw = dw_min.clone();
+                        glib::idle_add_local_once(move || {
+                            if let Some(dock) = dw.upgrade() { dock.refresh(); }
+                        });
+                    });
+                    menu_box.append(&min_item);
+                }
+
+                if minimized_count > 0 {
+                    let rst_item  = ctx_menu_item("view-restore-symbolic", "Restore all", false);
+                    let class_rst = app_class_m.clone();
+                    let pop_rst   = menu_pop.clone();
+                    let dw_rst    = dock_weak_min.clone();
+                    rst_item.connect_clicked(move |_| {
+                        let wins = HyprlandHandler::new().get_clients_for_class(&class_rst);
+                        let to_restore: Vec<(String, i32, bool, [i32; 2], [i32; 2])> =
+                            MINIMIZED.with(|m| {
+                                let map = m.borrow();
+                                wins.iter()
+                                    .filter_map(|w| map.get(&w.address)
+                                        .map(|(ws, fl, at, sz)| (w.address.clone(), *ws, *fl, *at, *sz)))
+                                    .collect()
+                            });
+                        MINIMIZED.with(|m| m.borrow_mut()
+                            .retain(|k, _| !to_restore.iter().any(|(a,_,_,_,_)| a == k)));
+                        for (addr, ws_id, floating, at, size) in &to_restore {
+                            let _ = std::process::Command::new("hyprctl")
+                                .args(["dispatch", "movetoworkspace",
+                                       &format!("{},address:{}", ws_id, addr)])
+                                .spawn();
+                            if *floating {
+                                let _ = std::process::Command::new("hyprctl")
+                                    .args(["dispatch", "movewindowpixel",
+                                           &format!("exact {} {},address:{}", at[0], at[1], addr)])
+                                    .spawn();
+                                let _ = std::process::Command::new("hyprctl")
+                                    .args(["dispatch", "resizewindowpixel",
+                                           &format!("exact {} {},address:{}", size[0], size[1], addr)])
+                                    .spawn();
+                            }
+                        }
+                        if let Some((addr, _, _, _, _)) = to_restore.first() {
+                            let _ = std::process::Command::new("hyprctl")
+                                .args(["dispatch", "focuswindow", &format!("address:{}", addr)])
+                                .spawn();
+                        }
+                        pop_rst.popdown();
+                        let dw = dw_rst.clone();
+                        glib::idle_add_local_once(move || {
+                            if let Some(dock) = dw.upgrade() { dock.refresh(); }
+                        });
+                    });
+                    menu_box.append(&rst_item);
+                }
 
                 let close_item = ctx_menu_item("window-close-symbolic", "Close all windows", true);
                 let class_c = app_class_m.clone();
