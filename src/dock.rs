@@ -559,7 +559,7 @@ impl Dock {
     }
 
     pub fn refresh(&self) {
-        reload_minimized_if_changed();
+        load_minimized_state();
         self.refresh_with_preview();
         self.refresh_workspaces();
         // Refresh the focused-app highlight after rebuilding the icons.
@@ -682,7 +682,7 @@ impl Dock {
     /// Rebuild the "running apps" section (non-pinned apps in execution)
     /// shown below the pinned dock icons, like a taskbar.
     pub fn refresh_workspaces(&self) {
-        reload_minimized_if_changed();
+        load_minimized_state();
         // Clear old buttons
         while let Some(child) = self.workspace_box.first_child() {
             self.workspace_box.remove(&child);
@@ -1232,8 +1232,6 @@ thread_local! {
     static MINIMIZED: RefCell<std::collections::HashMap<String, (i32, bool, [i32; 2], [i32; 2], String)>> =
         RefCell::new(std::collections::HashMap::new());
 
-    /// mtime of the state file at last load — used to detect changes by sibling dock processes.
-    static LAST_STATE_MTIME: Cell<Option<std::time::SystemTime>> = const { Cell::new(None) };
 }
 
 fn minimized_state_path() -> Option<std::path::PathBuf> {
@@ -1252,7 +1250,8 @@ fn save_minimized_state() {
     });
 }
 
-/// Load persisted MINIMIZED state from disk (called once at startup).
+/// Load persisted MINIMIZED state from disk. Called at startup and on every
+/// refresh() so multi-monitor dock instances stay in sync without mtime tricks.
 fn load_minimized_state() {
     let Some(path) = minimized_state_path() else { return };
     if let Ok(data) = std::fs::read_to_string(&path) {
@@ -1262,23 +1261,6 @@ fn load_minimized_state() {
             MINIMIZED.with(|m| *m.borrow_mut() = map);
         }
     }
-    // Record mtime so reload_minimized_if_changed() can skip unchanged files.
-    if let Some(path) = minimized_state_path() {
-        let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-        LAST_STATE_MTIME.with(|c| c.set(mtime));
-    }
-}
-
-/// Reload MINIMIZED from disk only if a sibling dock process has written a newer file.
-/// Called on each refresh so multi-monitor instances stay in sync.
-fn reload_minimized_if_changed() {
-    let Some(path) = minimized_state_path() else { return };
-    let Ok(meta)  = std::fs::metadata(&path) else { return };
-    let Ok(mtime) = meta.modified() else { return };
-    let changed = LAST_STATE_MTIME.with(|c| {
-        if c.get() != Some(mtime) { c.set(Some(mtime)); true } else { false }
-    });
-    if changed { load_minimized_state(); }
 }
 
 
