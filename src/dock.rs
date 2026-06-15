@@ -473,6 +473,7 @@ impl Dock {
     /// once after the `Dock` is wrapped in an `Rc`.
     pub fn init(self: &Rc<Self>) {
         *self.self_weak.borrow_mut() = Rc::downgrade(self);
+        load_minimized_state();
         self.refresh();
         self.refresh_workspaces();
     }
@@ -1038,6 +1039,7 @@ impl Dock {
                                      win.class.to_lowercase()));
                             }
                         });
+                        save_minimized_state();
                         for win in &to_min {
                             let _ = std::process::Command::new("hyprctl")
                                 .args(["dispatch", "movetoworkspacesilent",
@@ -1071,6 +1073,7 @@ impl Dock {
                             });
                         MINIMIZED.with(|m| m.borrow_mut()
                             .retain(|k, _| !to_restore.iter().any(|(a,_,_,_,_)| a == k)));
+                        save_minimized_state();
                         let mut batch: Vec<String> = Vec::new();
                         for (addr, ws_id, floating, at, size) in &to_restore {
                             batch.push(format!("dispatch movetoworkspacesilent {},address:{}", ws_id, addr));
@@ -1205,6 +1208,29 @@ thread_local! {
         RefCell::new(std::collections::HashMap::new());
 }
 
+const MIN_STATE_FILE: &str = "/tmp/rust-dock-minimized.json";
+
+/// Persist MINIMIZED map to disk so state survives dock restarts.
+fn save_minimized_state() {
+    MINIMIZED.with(|m| {
+        let map = m.borrow();
+        if let Ok(json) = serde_json::to_string(&*map) {
+            let _ = std::fs::write(MIN_STATE_FILE, json);
+        }
+    });
+}
+
+/// Load persisted MINIMIZED state from disk (called once at startup).
+fn load_minimized_state() {
+    if let Ok(data) = std::fs::read_to_string(MIN_STATE_FILE) {
+        if let Ok(map) = serde_json::from_str::<
+            std::collections::HashMap<String, (i32, bool, [i32; 2], [i32; 2], String)>
+        >(&data) {
+            MINIMIZED.with(|m| *m.borrow_mut() = map);
+        }
+    }
+}
+
 
 /// Focus an existing window of the app (cycling through them on repeated clicks);
 /// if none are open, launch a new instance.
@@ -1228,6 +1254,7 @@ fn focus_or_launch(app: &AppInfo) {
     if !to_restore.is_empty() {
         let first_addr = to_restore[0].0.clone();
         MINIMIZED.with(|m| m.borrow_mut().retain(|k, _| !to_restore.iter().any(|(a,_,_,_,_)| a == k)));
+        save_minimized_state();
         // --batch keeps commands sequential so focuswindow never races movetoworkspace.
         let mut batch: Vec<String> = Vec::new();
         for (addr, ws_id, floating, at, size) in &to_restore {
