@@ -1102,6 +1102,25 @@ fn focus_or_launch(app: &AppInfo) {
         app.launch();
         return;
     }
+
+    // Restore any minimized windows (special workspace) to the current workspace.
+    let minimized: Vec<_> = windows.iter()
+        .filter(|w| w.workspace.name.starts_with("special:"))
+        .collect();
+    if !minimized.is_empty() {
+        for win in &minimized {
+            let _ = std::process::Command::new("hyprctl")
+                .args(["dispatch", "movetoworkspacesilent",
+                       &format!("current,address:{}", win.address)])
+                .spawn();
+        }
+        let addr = minimized[0].address.clone();
+        let _ = std::process::Command::new("hyprctl")
+            .args(["dispatch", "focuswindow", &format!("address:{}", addr)])
+            .spawn();
+        return;
+    }
+
     let idx = CYCLE_IDX.with(|m| {
         let mut m = m.borrow_mut();
         let entry = m.entry(app.id.clone()).or_insert(0);

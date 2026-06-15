@@ -324,10 +324,10 @@ pub fn load_css(config: &Config) {
     thumb_min_h = if config.compact_preview { 108 } else { 160 },
     thumb_min_w = if config.compact_preview { 200 } else { 260 },
     slide_out_transform = match config.position.as_str() {
-        "top"   => "translateY(-130%)",
-        "left"  => "translateX(-130%)",
-        "right" => "translateX(130%)",
-        _       => "translateY(130%)",
+        "top"   => "translateY(-200px)",
+        "left"  => "translateX(-200px)",
+        "right" => "translateX(200px)",
+        _       => "translateY(200px)",
     },
     );
 
