@@ -323,6 +323,8 @@ where
         if line.starts_with("openwindow>>")
             || line.starts_with("openwindowv2>>")
             || line.starts_with("closewindow>>")
+            || line.starts_with("movewindow>>")
+            || line.starts_with("movewindowv2>>")
         {
             on_event(DockEvent::WindowList);
         } else if line.starts_with("workspace>>")

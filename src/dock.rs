@@ -559,6 +559,7 @@ impl Dock {
     }
 
     pub fn refresh(&self) {
+        reload_minimized_if_changed();
         self.refresh_with_preview();
         self.refresh_workspaces();
         // Refresh the focused-app highlight after rebuilding the icons.
