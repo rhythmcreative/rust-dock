@@ -1208,21 +1208,26 @@ thread_local! {
         RefCell::new(std::collections::HashMap::new());
 }
 
-const MIN_STATE_FILE: &str = "/tmp/rust-dock-minimized.json";
+fn minimized_state_path() -> Option<std::path::PathBuf> {
+    // XDG_RUNTIME_DIR is per-user and mode 0700 — safe against symlink attacks.
+    dirs::runtime_dir().map(|d| d.join("rust-dock-minimized.json"))
+}
 
 /// Persist MINIMIZED map to disk so state survives dock restarts.
 fn save_minimized_state() {
+    let Some(path) = minimized_state_path() else { return };
     MINIMIZED.with(|m| {
         let map = m.borrow();
         if let Ok(json) = serde_json::to_string(&*map) {
-            let _ = std::fs::write(MIN_STATE_FILE, json);
+            let _ = std::fs::write(&path, json);
         }
     });
 }
 
 /// Load persisted MINIMIZED state from disk (called once at startup).
 fn load_minimized_state() {
-    if let Ok(data) = std::fs::read_to_string(MIN_STATE_FILE) {
+    let Some(path) = minimized_state_path() else { return };
+    if let Ok(data) = std::fs::read_to_string(&path) {
         if let Ok(map) = serde_json::from_str::<
             std::collections::HashMap<String, (i32, bool, [i32; 2], [i32; 2], String)>
         >(&data) {
