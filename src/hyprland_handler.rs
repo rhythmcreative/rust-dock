@@ -37,6 +37,7 @@ pub struct HyprClient {
     pub monitor: i32,
     pub at: [i32; 2],
     pub size: [i32; 2],
+    pub floating: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -92,6 +93,7 @@ fn client_from_value(v: &serde_json::Value) -> Option<HyprClient> {
         name: workspace.and_then(|w| w.get("name")).and_then(|x| x.as_str()).unwrap_or("").to_string(),
     };
     let monitor = v.get("monitor").and_then(|x| x.as_i64()).unwrap_or(-1) as i32;
+    let floating = v.get("floating").and_then(|x| x.as_bool()).unwrap_or(false);
     Some(HyprClient {
         address,
         stable_id,
@@ -102,6 +104,7 @@ fn client_from_value(v: &serde_json::Value) -> Option<HyprClient> {
         monitor,
         at: arr2(v.get("at")),
         size: arr2(v.get("size")),
+        floating,
     })
 }
 

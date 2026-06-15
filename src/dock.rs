@@ -978,10 +978,24 @@ impl Dock {
                 let class_min = app_class_m.clone();
                 let pop_min   = menu_pop.clone();
                 min_item.connect_clicked(move |_| {
-                    for win in HyprlandHandler::new().get_clients_for_class(&class_min) {
+                    let wins = HyprlandHandler::new().get_clients_for_class(&class_min);
+                    MINIMIZED.with(|m| {
+                        let mut map = m.borrow_mut();
+                        for win in &wins {
+                            map.insert(win.address.clone(), (!win.floating, win.at));
+                        }
+                    });
+                    for win in &wins {
+                        // Tiled windows must be floated first so they can be moved off-screen.
+                        if !win.floating {
+                            let _ = std::process::Command::new("hyprctl")
+                                .args(["dispatch", "setfloating",
+                                       &format!("address:{}", win.address)])
+                                .spawn();
+                        }
                         let _ = std::process::Command::new("hyprctl")
-                            .args(["dispatch", "movetoworkspacesilent",
-                                   &format!("special:_rdock,address:{}", win.address)])
+                            .args(["dispatch", "movewindowpixel",
+                                   &format!("exact 30000 30000,address:{}", win.address)])
                             .spawn();
                     }
                     pop_min.popdown();
@@ -1090,6 +1104,11 @@ thread_local! {
     /// Per-app index so repeated clicks cycle through the app's open windows.
     static CYCLE_IDX: RefCell<std::collections::HashMap<String, usize>> =
         RefCell::new(std::collections::HashMap::new());
+
+    /// Tracks minimized windows: address → (was_tiled, original_at).
+    /// Minimized windows are moved off-screen; clicking the icon restores them.
+    static MINIMIZED: RefCell<std::collections::HashMap<String, (bool, [i32; 2])>> =
+        RefCell::new(std::collections::HashMap::new());
 }
 
 
@@ -1103,19 +1122,32 @@ fn focus_or_launch(app: &AppInfo) {
         return;
     }
 
-    // Restore minimized windows (in our private special workspace) to the current
-    // workspace. movetoworkspace (non-silent) moves + focuses in one dispatch so
-    // Hyprland never shows the special workspace to the user.
-    let minimized: Vec<_> = windows.iter()
-        .filter(|w| w.workspace.name == "special:_rdock")
-        .collect();
-    if !minimized.is_empty() {
-        for win in &minimized {
-            let _ = std::process::Command::new("hyprctl")
-                .args(["dispatch", "movetoworkspace",
-                       &format!("current,address:{}", win.address)])
-                .spawn();
+    // Restore off-screen minimized windows. Tiled windows get re-tiled;
+    // floating windows move back to their original position.
+    let to_restore: Vec<(String, bool, [i32; 2])> = MINIMIZED.with(|m| {
+        let map = m.borrow();
+        windows.iter()
+            .filter_map(|w| map.get(&w.address).map(|(tiled, at)| (w.address.clone(), *tiled, *at)))
+            .collect()
+    });
+    if !to_restore.is_empty() {
+        let first_addr = to_restore[0].0.clone();
+        MINIMIZED.with(|m| m.borrow_mut().retain(|k, _| !to_restore.iter().any(|(a,_,_)| a == k)));
+        for (addr, was_tiled, at) in &to_restore {
+            if *was_tiled {
+                let _ = std::process::Command::new("hyprctl")
+                    .args(["dispatch", "settiled", &format!("address:{}", addr)])
+                    .spawn();
+            } else {
+                let _ = std::process::Command::new("hyprctl")
+                    .args(["dispatch", "movewindowpixel",
+                           &format!("exact {} {},address:{}", at[0], at[1], addr)])
+                    .spawn();
+            }
         }
+        let _ = std::process::Command::new("hyprctl")
+            .args(["dispatch", "focuswindow", &format!("address:{}", first_addr)])
+            .spawn();
         return;
     }
 
