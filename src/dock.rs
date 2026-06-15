@@ -53,6 +53,9 @@ pub struct Dock {
     pub hide_timer:       Rc<Cell<Option<glib::SourceId>>>,
     /// Pending slide-in/out animation timer — cancelled on rapid toggle.
     anim_timer:           Rc<Cell<Option<glib::SourceId>>>,
+    /// Logical visibility — never call window.hide() (unmaps the layer surface from
+    /// all workspaces); use off-screen margin instead so the surface stays mapped.
+    dock_visible:         Rc<Cell<bool>>,
 }
 
 fn safe_remove_source(id: glib::SourceId) {
@@ -465,7 +468,8 @@ impl Dock {
             preview_state,
             show_timer,
             hide_timer,
-            anim_timer: Rc::new(Cell::new(None)),
+            anim_timer:    Rc::new(Cell::new(None)),
+            dock_visible:  Rc::new(Cell::new(true)),
         }
     }
 
@@ -478,36 +482,63 @@ impl Dock {
         self.refresh_workspaces();
     }
 
-    /// Slide the dock off-screen and then hide it. CSS transition drives the visual.
+    fn anchor_edge(&self) -> Edge {
+        match self.config.borrow().position.as_str() {
+            "top"   => Edge::Top,
+            "left"  => Edge::Left,
+            "right" => Edge::Right,
+            _       => Edge::Bottom,
+        }
+    }
+
+    fn anchor_margin(&self) -> i32 {
+        let cfg = self.config.borrow();
+        let base = if cfg.system_gap_used { HyprlandHandler::new().get_gaps_out() } else { cfg.margin };
+        match cfg.position.as_str() {
+            "top"   => cfg.margin_top + base,
+            "left"  => cfg.margin_left + base,
+            "right" => cfg.margin_right + base,
+            _       => cfg.margin_bottom + base,
+        }
+    }
+
+    /// Slide the dock off-screen via margin — never calls window.hide() so the
+    /// layer-shell surface stays mapped on all workspaces.
     fn slide_hide(&self) {
+        if !self.dock_visible.get() { return; }
+        self.dock_visible.set(false);
         if let Some(id) = self.anim_timer.take() { safe_remove_source(id); }
         self.box_container.add_css_class("dock-sliding");
         let win   = self.window.clone();
         let det   = self.detect_window.clone();
         let box_c = self.box_container.clone();
         let anim  = Rc::clone(&self.anim_timer);
+        let edge  = self.anchor_edge();
         let id = glib::timeout_add_local_once(
             std::time::Duration::from_millis(230),
             move || {
                 anim.set(None);
-                win.hide();
-                if let Some(d) = det { d.hide(); }
+                win.set_margin(edge, -2000);
+                win.set_exclusive_zone(0);
                 box_c.remove_css_class("dock-sliding");
+                if let Some(d) = det { d.hide(); }
             },
         );
         self.anim_timer.set(Some(id));
     }
 
-    /// Show the dock starting from the off-screen position, then slide it in.
+    /// Slide the dock back on-screen by restoring the anchor margin.
     fn slide_show(&self) {
+        if self.dock_visible.get() { return; }
+        self.dock_visible.set(true);
         if let Some(id) = self.anim_timer.take() { safe_remove_source(id); }
-        // Start from the out-state so the first render is already off-screen.
+        let edge   = self.anchor_edge();
+        let margin = self.anchor_margin();
+        self.window.set_margin(edge, margin);
         self.box_container.add_css_class("dock-sliding");
-        self.window.show();
         if let Some(ref d) = self.detect_window { d.show(); }
         let box_c = self.box_container.clone();
         let anim  = Rc::clone(&self.anim_timer);
-        // One frame later: remove the class → CSS transition slides the dock in.
         let id = glib::timeout_add_local_once(
             std::time::Duration::from_millis(16),
             move || {
@@ -516,24 +547,15 @@ impl Dock {
             },
         );
         self.anim_timer.set(Some(id));
-        // Re-establish exclusive zone after showing (it was 0 while hidden).
         self.update_exclusive_zone();
     }
 
     pub fn toggle_visibility(&self) {
-        if self.window.is_visible() {
-            self.slide_hide();
-        } else {
-            self.slide_show();
-        }
+        if self.dock_visible.get() { self.slide_hide(); } else { self.slide_show(); }
     }
 
     pub fn set_dock_visible(&self, visible: bool) {
-        if visible {
-            if !self.window.is_visible() { self.slide_show(); }
-        } else {
-            if self.window.is_visible() { self.slide_hide(); }
-        }
+        if visible { self.slide_show(); } else { self.slide_hide(); }
     }
 
     pub fn refresh(&self) {
