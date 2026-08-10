@@ -1,6 +1,3 @@
-> [!WARNING]
-> This project is in active development, there may be errors and bugs.
-
 <div align="center">
 
 <img width="200" height="200" alt="rust-dock" src="https://github.com/user-attachments/assets/073e72aa-ef28-421b-aa56-5246fbbbcf6d" />
