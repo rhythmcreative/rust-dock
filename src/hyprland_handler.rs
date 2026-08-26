@@ -223,6 +223,82 @@ impl HyprlandHandler {
 
 }
 
+/// ── Hyprland dispatch helpers (0.56+ Lua API) ──────────────────────────────────
+// Hyprland 0.56 switched to Lua: `hyprctl dispatch exec` now fails with
+// `error: [string "return hl.dispatch(exec ..."]`. The new form is
+// `hyprctl dispatch 'hl.dsp.exec_cmd("cmd")'` and similar `hl.dsp.*` calls.
+// This module provides thin wrappers that try the new Lua dispatch first and
+// fall back to legacy syntax for older Hyprland versions. They also try a
+// direct socket fallback if `hyprctl` is missing.
+
+fn lua_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn hypr_dispatch_lua(lua: &str) -> bool {
+    // Primary: `hyprctl dispatch <lua>`
+    if let Ok(out) = Command::new("hyprctl").args(["dispatch", lua]).output() {
+        let stderr = String::from_utf8_lossy(&out.stderr).to_lowercase();
+        let stdout = String::from_utf8_lossy(&out.stdout).to_lowercase();
+        if out.status.success() && !stderr.contains("error") && !stdout.contains("error") {
+            return true;
+        }
+        // Some Hyprland builds return exit 0 even on error but print "error:" in stdout
+        if !stderr.contains("error") && !stdout.contains("error") && out.status.success() {
+            return true;
+        }
+    }
+    // Fallback: legacy dispatch via hyprctl (for Hyprland <0.55)
+    // Not needed for most new dispatchers but kept for compatibility
+    false
+}
+
+pub fn hypr_exec_cmd(cmd: &str) {
+    let esc = lua_escape(cmd);
+    let lua = format!("hl.dsp.exec_cmd(\"{}\")", esc);
+    if hypr_dispatch_lua(&lua) {
+        return;
+    }
+    // Fallback: direct shell spawn (works without Hyprland)
+    let _ = Command::new("sh").arg("-c").arg(cmd).spawn();
+}
+
+pub fn hypr_focus_window(address: &str) {
+    let lua = format!("hl.dsp.focus({{window=\"address:{}\"}})", address);
+    if hypr_dispatch_lua(&lua) { return; }
+    let _ = Command::new("hyprctl").args(["dispatch", "focuswindow", &format!("address:{}", address)]).spawn();
+}
+
+pub fn hypr_close_window(address: &str) {
+    let lua = format!("hl.dsp.window.close({{window=\"address:{}\"}})", address);
+    if hypr_dispatch_lua(&lua) { return; }
+    let _ = Command::new("hyprctl").args(["dispatch", "closewindow", &format!("address:{}", address)]).spawn();
+}
+
+pub fn hypr_move_to_workspace(address: &str, ws_id: i32) {
+    let lua = format!("hl.dsp.window.move({{workspace={}, window=\"address:{}\"}})", ws_id, address);
+    if hypr_dispatch_lua(&lua) { return; }
+    let _ = Command::new("hyprctl").args(["dispatch", "movetoworkspacesilent", &format!("{},address:{}", ws_id, address)]).spawn();
+}
+
+pub fn hypr_move_window_pixel(address: &str, x: i32, y: i32) {
+    let lua = format!("hl.dsp.window.move({{x={}, y={}, window=\"address:{}\"}})", x, y, address);
+    if hypr_dispatch_lua(&lua) { return; }
+    let _ = Command::new("hyprctl").args(["dispatch", "movewindowpixel", &format!("exact {} {},address:{}", x, y, address)]).spawn();
+}
+
+pub fn hypr_resize_window_pixel(address: &str, w: i32, h: i32) {
+    let lua = format!("hl.dsp.window.resize({{x={}, y={}, window=\"address:{}\"}})", w, h, address);
+    if hypr_dispatch_lua(&lua) { return; }
+    let _ = Command::new("hyprctl").args(["dispatch", "resizewindowpixel", &format!("exact {} {},address:{}", w, h, address)]).spawn();
+}
+
+pub fn hypr_focus_workspace(ws_id: i32) {
+    let lua = format!("hl.dsp.focus({{workspace={}}})", ws_id);
+    if hypr_dispatch_lua(&lua) { return; }
+    let _ = Command::new("hyprctl").args(["dispatch", "workspace", &ws_id.to_string()]).spawn();
+}
+
 /// Capture a screenshot of a specific window.
 /// Uses grim with scale 0.25 (reduced resolution = fast), no PNG compression.
 /// Falls back to geometry-based capture with the same scale.

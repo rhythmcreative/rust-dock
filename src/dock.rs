@@ -995,12 +995,7 @@ impl Dock {
             new_win_item.connect_clicked(move |_| {
                 if !exec.is_empty() {
                     let clean = crate::app_info::clean_exec_pub(&exec);
-                    if let Err(e) = std::process::Command::new("hyprctl")
-                        .args(["dispatch", "exec", &format!("[float;center 1] {}", clean)])
-                        .spawn()
-                    {
-                        log::warn!("Failed to launch new window: {e}");
-                    }
+                    crate::hyprland_handler::hypr_exec_cmd(&format!("[float;center 1] {}", clean));
                 }
             });
             menu_box.append(&new_win_item);
@@ -1065,10 +1060,14 @@ impl Dock {
                         });
                         save_minimized_state();
                         for win in &to_min {
-                            let _ = std::process::Command::new("hyprctl")
-                                .args(["dispatch", "movetoworkspacesilent",
-                                       &format!("special:minimized,address:{}", win.address)])
-                                .spawn();
+                            let lua = format!("hl.dsp.window.move({{workspace=\"special:minimized\", window=\"address:{}\"}})", win.address);
+                            let ok = std::process::Command::new("hyprctl").args(["dispatch", &lua]).output()
+                                .map(|o| o.status.success()).unwrap_or(false);
+                            if !ok {
+                                let _ = std::process::Command::new("hyprctl")
+                                    .args(["dispatch", "movetoworkspacesilent", &format!("special:minimized,address:{}", win.address)])
+                                    .spawn();
+                            }
                         }
                         pop_min.popdown();
                         let dw = dw_min.clone();
@@ -1098,22 +1097,16 @@ impl Dock {
                         MINIMIZED.with(|m| m.borrow_mut()
                             .retain(|k, _| !to_restore.iter().any(|(a,_,_,_,_)| a == k)));
                         save_minimized_state();
-                        let mut batch: Vec<String> = Vec::new();
                         for (addr, ws_id, floating, at, size) in &to_restore {
-                            batch.push(format!("dispatch movetoworkspacesilent {},address:{}", ws_id, addr));
+                            crate::hyprland_handler::hypr_move_to_workspace(addr, *ws_id);
                             if *floating {
-                                batch.push(format!("dispatch movewindowpixel exact {} {},address:{}", at[0], at[1], addr));
-                                batch.push(format!("dispatch resizewindowpixel exact {} {},address:{}", size[0], size[1], addr));
+                                crate::hyprland_handler::hypr_move_window_pixel(addr, at[0], at[1]);
+                                crate::hyprland_handler::hypr_resize_window_pixel(addr, size[0], size[1]);
                             }
                         }
                         if let Some((addr, ws_id, _, _, _)) = to_restore.first() {
-                            batch.push(format!("dispatch workspace {}", ws_id));
-                            batch.push(format!("dispatch focuswindow address:{}", addr));
-                        }
-                        if !batch.is_empty() {
-                            let _ = std::process::Command::new("hyprctl")
-                                .args(["--batch", &batch.join(" ; ")])
-                                .spawn();
+                            crate::hyprland_handler::hypr_focus_workspace(*ws_id);
+                            crate::hyprland_handler::hypr_focus_window(addr);
                         }
                         pop_rst.popdown();
                         let dw = dw_rst.clone();
@@ -1129,14 +1122,8 @@ impl Dock {
                 let class_c = app_class_m.clone();
                 let pop_r2  = menu_pop.clone();
                 close_item.connect_clicked(move |_| {
-                    // closewindow only closes one window per call, so iterate by address.
                     for win in HyprlandHandler::new().get_clients_for_class(&class_c) {
-                        if let Err(e) = std::process::Command::new("hyprctl")
-                            .args(["dispatch", "closewindow", &format!("address:{}", win.address)])
-                            .spawn()
-                        {
-                            log::warn!("Failed to close {}: {e}", win.address);
-                        }
+                        crate::hyprland_handler::hypr_close_window(&win.address);
                     }
                     pop_r2.popdown();
                 });
@@ -1288,20 +1275,15 @@ fn focus_or_launch(app: &AppInfo) {
         let first_ws   = to_restore[0].1;
         MINIMIZED.with(|m| m.borrow_mut().retain(|k, _| !to_restore.iter().any(|(a,_,_,_,_)| a == k)));
         save_minimized_state();
-        let mut batch: Vec<String> = Vec::new();
         for (addr, ws_id, floating, at, size) in &to_restore {
-            batch.push(format!("dispatch movetoworkspacesilent {},address:{}", ws_id, addr));
+            crate::hyprland_handler::hypr_move_to_workspace(addr, *ws_id);
             if *floating {
-                batch.push(format!("dispatch movewindowpixel exact {} {},address:{}", at[0], at[1], addr));
-                batch.push(format!("dispatch resizewindowpixel exact {} {},address:{}", size[0], size[1], addr));
+                crate::hyprland_handler::hypr_move_window_pixel(addr, at[0], at[1]);
+                crate::hyprland_handler::hypr_resize_window_pixel(addr, size[0], size[1]);
             }
         }
-        // Explicit workspace switch — focuswindow alone doesn't always change workspace.
-        batch.push(format!("dispatch workspace {}", first_ws));
-        batch.push(format!("dispatch focuswindow address:{}", first_addr));
-        let _ = std::process::Command::new("hyprctl")
-            .args(["--batch", &batch.join(" ; ")])
-            .spawn();
+        crate::hyprland_handler::hypr_focus_workspace(first_ws);
+        crate::hyprland_handler::hypr_focus_window(&first_addr);
         return;
     }
 
@@ -1313,12 +1295,7 @@ fn focus_or_launch(app: &AppInfo) {
         cur
     });
     let addr = windows[idx].address.clone();
-    if let Err(e) = std::process::Command::new("hyprctl")
-        .args(["dispatch", "focuswindow", &format!("address:{}", addr)])
-        .spawn()
-    {
-        log::warn!("Failed to focus window {}: {e}", addr);
-    }
+    crate::hyprland_handler::hypr_focus_window(&addr);
 }
 
 // ── Preview window content management ───────────────────────────────────────
@@ -1413,9 +1390,7 @@ fn build_preview_content(
             .build();
         let addr_close = win.address.clone();
         close_x.connect_clicked(move |_| {
-            let _ = std::process::Command::new("hyprctl")
-                .args(["dispatch", "closewindow", &format!("address:{}", addr_close)])
-                .spawn();
+            crate::hyprland_handler::hypr_close_window(&addr_close);
         });
         header.append(&close_x);
         card.append(&header);
@@ -1445,12 +1420,7 @@ fn build_preview_content(
         let addr_focus = win.address.clone();
         let click_g = gtk4::GestureClick::new();
         click_g.connect_pressed(move |_, _, _, _| {
-            if let Err(e) = std::process::Command::new("hyprctl")
-                .args(["dispatch", "focuswindow", &format!("address:{}", addr_focus)])
-                .spawn()
-            {
-                log::warn!("Failed to focus window {}: {e}", addr_focus);
-            }
+            crate::hyprland_handler::hypr_focus_window(&addr_focus);
         });
         card.add_controller(click_g);
 

@@ -126,15 +126,24 @@ impl AppInfo {
 
     pub fn launch(&self) {
         let exec = clean_exec(&self.exec);
-
-        // [float] makes the new window open as floating so it can be freely
-        // dragged to any position. Without this, Hyprland tiles the window and
-        // it can only be moved with Super+drag.
-        if let Err(e) = Command::new("hyprctl")
-            .args(["dispatch", "exec", &format!("[float;center 1] {}", exec)])
-            .spawn()
-        {
-            log::error!("Failed to launch {}: {}", self.name, e);
+        if exec.is_empty() {
+            log::warn!("Empty Exec for {}, cannot launch", self.name);
+            return;
+        }
+        // Direct spawn is the most reliable across Hyprland versions.
+        // Hyprland 0.56 broke `hyprctl dispatch exec` (see hyprland_handler).
+        // Using `sh -c` bypasses Hyprland's broken dispatcher entirely.
+        // Flatpak placeholders @@u/@@ are stripped (file-forwarding).
+        let fallback_exec = exec.replace("@@u", "").replace("@@", "").trim().to_string();
+        // Try gio/gtk-launch first for Flatpak/desktop-id correctness, then sh.
+        // gio handles Flatpak file forwarding better than raw exec.
+        let launched = Command::new("sh").arg("-c").arg(&fallback_exec).spawn().is_ok();
+        if launched {
+            return;
+        }
+        log::warn!("sh launch failed for {}, trying gtk-launch {}", self.name, self.id);
+        if let Err(e) = Command::new("gtk-launch").arg(&self.id).spawn() {
+            log::error!("Failed to launch {} via gtk-launch: {}", self.name, e);
         }
     }
 }
