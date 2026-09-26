@@ -511,7 +511,6 @@ impl Dock {
         self.box_container.add_css_class("dock-sliding");
         let win   = self.window.clone();
         let det   = self.detect_window.clone();
-        let box_c = self.box_container.clone();
         let anim  = Rc::clone(&self.anim_timer);
         let edge  = self.anchor_edge();
         let id = glib::timeout_add_local_once(
@@ -520,7 +519,6 @@ impl Dock {
                 anim.set(None);
                 win.set_margin(edge, -2000);
                 win.set_exclusive_zone(0);
-                box_c.remove_css_class("dock-sliding");
                 if let Some(d) = det { d.hide(); }
             },
         );
