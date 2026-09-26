@@ -72,14 +72,11 @@ pub fn load_css(config: &Config) {
     let default_css = format!("
         /* ── Dock window (only rust-dock, not dock-preview) ─── */
         window:not(.dock-preview-window) {{
-            background: transparent;
-            background-color: transparent;
-            border: none;
-        }}
-        .dock-container {{
             background-color: alpha(@background, {opacity});
             border-radius: {radius}px;
             border: 1px solid alpha(@color1, 0.35);
+        }}
+        .dock-container {{
             padding: {padding}px;
             transition: transform 220ms cubic-bezier(0.4, 0, 1, 1), opacity 200ms ease;
         }}
