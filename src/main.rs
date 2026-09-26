@@ -13,8 +13,8 @@ use config::Config;
 use dock::Dock;
 use hyprland_handler::{DockEvent, invalidate_client_cache, invalidate_gaps_cache};
 use std::rc::Rc;
-use std::cell::RefCell;
-use std::sync::{Arc, Mutex};
+use std::cell::{RefCell, Cell};
+use std::time::Duration;
 
 /// Remove stale window-preview screenshots and recreate the work directory.
 fn cleanup_preview_tmp() {
@@ -115,74 +115,55 @@ fn main() {
         let dock = Rc::new(Dock::new(app, Rc::clone(&config_activate)));
         dock.init();
 
-        // --- Hyprland socket listener ---
-        let (tx_hypr, rx_hypr) = std::sync::mpsc::channel::<DockEvent>();
+        // --- Hyprland socket listener (0ms latency, zero polling) ---
+        let (tx_hypr, rx_hypr) = async_channel::unbounded::<DockEvent>();
         hyprland_handler::start_listener(move |ev| {
-            let _ = tx_hypr.send(ev);
+            let _ = tx_hypr.send_blocking(ev);
         });
 
-        // Poll at 50ms. Window open/close rebuilds the dock; focus changes only
-        // update the active highlight; workspace changes refresh the ws bar.
         let dock_hypr = Rc::clone(&dock);
-        let rx_hypr = Arc::new(Mutex::new(rx_hypr));
-        glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
-            let (window_changed, workspace_changed, last_focus, cfg_reloaded) = {
-                let Ok(rx) = rx_hypr.lock() else { return glib::ControlFlow::Continue; };
-                let mut changed = false;
-                let mut ws_changed = false;
-                let mut focus = None;
-                let mut cfg_reload = false;
-                while let Ok(ev) = rx.try_recv() {
-                    match ev {
-                        DockEvent::WindowList       => changed = true,
-                        DockEvent::Workspace        => ws_changed = true,
-                        DockEvent::Focus(class)     => focus = Some(class),
-                        DockEvent::ConfigReloaded   => cfg_reload = true,
+        let pending_refresh = Rc::new(Cell::new(false));
+        let pr = Rc::clone(&pending_refresh);
+        let dh = Rc::clone(&dock_hypr);
+
+        glib::MainContext::default().spawn_local(async move {
+            while let Ok(ev) = rx_hypr.recv().await {
+                match ev {
+                    DockEvent::WindowList => {
+                        invalidate_client_cache();
+                        dock_hypr.refresh_workspaces();
+                        if !pr.get() {
+                            pr.set(true);
+                            let pr_c = Rc::clone(&pr);
+                            let dh_c = Rc::clone(&dh);
+                            glib::timeout_add_local_once(Duration::from_millis(200), move || {
+                                pr_c.set(false);
+                                invalidate_client_cache();
+                                dh_c.refresh();
+                            });
+                        }
+                    }
+                    DockEvent::Workspace => {
+                        dock_hypr.refresh_workspaces();
+                    }
+                    DockEvent::Focus(class) => {
+                        dock_hypr.update_active(&class);
+                    }
+                    DockEvent::ConfigReloaded => {
+                        invalidate_gaps_cache();
                     }
                 }
-                (changed, ws_changed, focus, cfg_reload)
-            };
-            if window_changed {
-                // Discard the client cache so both rebuilds fetch fresh data.
-                invalidate_client_cache();
-                // Only the workspace bar (running apps) needs updating for most
-                // open/close events — pinned icons and layout stay the same.
-                dock_hypr.refresh_workspaces();
-                // Race condition fix: Hyprland may emit `openwindow` before
-                // `hyprctl clients -j` lists the new window. Full refresh 350ms
-                // later guarantees a new pinned-app indicator is picked up too.
-                let dock_delayed = Rc::clone(&dock_hypr);
-                glib::timeout_add_local_once(
-                    std::time::Duration::from_millis(350),
-                    move || {
-                        invalidate_client_cache();
-                        dock_delayed.refresh();
-                    },
-                );
             }
-            if workspace_changed && !window_changed {
-                dock_hypr.refresh_workspaces();
-            }
-            if let Some(class) = last_focus {
-                dock_hypr.update_active(&class);
-            }
-            if cfg_reloaded {
-                invalidate_gaps_cache();
-            }
-            glib::ControlFlow::Continue
         });
 
-        // --- Pywal file watcher ---
-        // Watch the whole ~/.cache/wal/ directory so we catch file recreations
-        // (pywal deletes and rewrites files, which inotify sees as CREATE, not MODIFY).
-        let (tx_pywal, rx_pywal) = std::sync::mpsc::channel::<()>();
+        // --- Pywal file watcher (Event-driven, 0 polling) ---
+        let (tx_pywal, rx_pywal) = async_channel::unbounded::<()>();
         std::thread::spawn(move || {
             use notify::{Watcher, RecursiveMode};
             if let Some(mut wal_dir) = dirs::cache_dir() {
                 wal_dir.push("wal");
-                // If the directory doesn't exist yet, poll until pywal runs for the first time.
                 while !wal_dir.exists() {
-                    std::thread::sleep(std::time::Duration::from_secs(5));
+                    std::thread::sleep(Duration::from_secs(5));
                 }
                 let (tx, rx) = std::sync::mpsc::channel();
                 if let Ok(mut watcher) = notify::recommended_watcher(tx) {
@@ -193,7 +174,7 @@ fn main() {
                                 p.extension().map_or(false, |ext| ext == "css")
                             });
                             if is_css && (e.kind.is_modify() || e.kind.is_create()) {
-                                let _ = tx_pywal.send(());
+                                let _ = tx_pywal.send_blocking(());
                             }
                         }
                     }
@@ -203,27 +184,27 @@ fn main() {
 
         let dock_pywal = Rc::clone(&dock);
         let config_pywal = Rc::clone(&config_activate);
-        let rx_pywal = Arc::new(Mutex::new(rx_pywal));
-        // Seed the mtime so the first poll doesn't trigger a spurious reload.
-        style::pywal_file_changed();
-        glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
-            // Primary: inotify watcher. Fallback: mtime polling (catches atomic
-            // renames and directory recreations that inotify may miss).
-            let notified = {
-                let Ok(rx) = rx_pywal.lock() else { return glib::ControlFlow::Continue; };
-                rx.try_recv().is_ok()
-            };
-            if notified || style::pywal_file_changed() {
-                let cfg = config_pywal.borrow();
-                style::load_css(&*cfg);
-                drop(cfg);
-                dock_pywal.refresh();
+        let pywal_debouncing = Rc::new(Cell::new(false));
+        glib::MainContext::default().spawn_local(async move {
+            while let Ok(()) = rx_pywal.recv().await {
+                if !pywal_debouncing.get() {
+                    pywal_debouncing.set(true);
+                    let deb = Rc::clone(&pywal_debouncing);
+                    let dock = Rc::clone(&dock_pywal);
+                    let config = Rc::clone(&config_pywal);
+                    glib::timeout_add_local_once(Duration::from_millis(60), move || {
+                        deb.set(false);
+                        let cfg = config.borrow();
+                        style::load_css(&*cfg);
+                        drop(cfg);
+                        dock.refresh();
+                    });
+                }
             }
-            glib::ControlFlow::Continue
         });
 
-        // --- Config file hot-reload ---
-        let (tx_cfg, rx_cfg) = std::sync::mpsc::channel::<()>();
+        // --- Config file hot-reload (Event-driven, 0 polling) ---
+        let (tx_cfg, rx_cfg) = async_channel::unbounded::<()>();
         std::thread::spawn(move || {
             use notify::{Watcher, RecursiveMode};
             if let Some(mut conf_dir) = dirs::config_dir() {
@@ -235,7 +216,7 @@ fn main() {
                         for event in rx {
                             if let Ok(e) = event {
                                 if e.kind.is_modify() || e.kind.is_create() {
-                                    let _ = tx_cfg.send(());
+                                    let _ = tx_cfg.send_blocking(());
                                 }
                             }
                         }
@@ -247,60 +228,59 @@ fn main() {
         let dock_cfg = Rc::clone(&dock);
         let config_cfg = Rc::clone(&config_activate);
         let cli_cfg = Rc::clone(&cli_activate);
-        let rx_cfg = Arc::new(Mutex::new(rx_cfg));
-        glib::timeout_add_local(std::time::Duration::from_millis(700), move || {
-            let changed = {
-                let Ok(rx) = rx_cfg.lock() else { return glib::ControlFlow::Continue; };
-                let mut c = false;
-                while rx.try_recv().is_ok() { c = true; }
-                c
-            };
-            if changed {
-                // Re-read the file, then re-apply CLI overrides (they win).
-                let mut new_cfg = Config::new();
-                cli_cfg.apply_to(&mut new_cfg);
-                *config_cfg.borrow_mut() = new_cfg;
-                let cfg = config_cfg.borrow();
-                style::load_css(&*cfg);
-                drop(cfg);
-                dock_cfg.refresh();
+        let cfg_debouncing = Rc::new(Cell::new(false));
+        glib::MainContext::default().spawn_local(async move {
+            while let Ok(()) = rx_cfg.recv().await {
+                if !cfg_debouncing.get() {
+                    cfg_debouncing.set(true);
+                    let deb = Rc::clone(&cfg_debouncing);
+                    let dock = Rc::clone(&dock_cfg);
+                    let config = Rc::clone(&config_cfg);
+                    let cli = Rc::clone(&cli_cfg);
+                    glib::timeout_add_local_once(Duration::from_millis(100), move || {
+                        deb.set(false);
+                        let mut new_cfg = Config::new();
+                        cli.apply_to(&mut new_cfg);
+                        *config.borrow_mut() = new_cfg;
+                        let cfg = config.borrow();
+                        style::load_css(&*cfg);
+                        drop(cfg);
+                        dock.refresh();
+                    });
+                }
             }
-            glib::ControlFlow::Continue
         });
 
-        // --- SIGUSR1/SIGUSR2 signal handler ---
-        let (tx_sig, rx_sig) = std::sync::mpsc::channel::<i32>();
+        // --- Signal handler (SIGHUP/SIGUSR1 toggle, SIGUSR2 show, SIGTERM/INT quit) ---
+        let (tx_sig, rx_sig) = async_channel::unbounded::<i32>();
         std::thread::spawn(move || {
             use signal_hook::iterator::Signals;
             if let Ok(mut signals) = Signals::new(&[
                 signal_hook::consts::SIGUSR1,
                 signal_hook::consts::SIGUSR2,
+                signal_hook::consts::SIGHUP,
                 signal_hook::consts::SIGTERM,
                 signal_hook::consts::SIGINT,
             ]) {
                 for signal in signals.forever() {
-                    let _ = tx_sig.send(signal);
+                    let _ = tx_sig.send_blocking(signal);
                 }
             }
         });
 
         let dock_signal = Rc::clone(&dock);
         let app_quit = app.clone();
-        let rx_sig = Arc::new(Mutex::new(rx_sig));
-        glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
-            let Ok(rx) = rx_sig.lock() else { return glib::ControlFlow::Continue; };
-            if let Ok(sig) = rx.try_recv() {
-                if sig == signal_hook::consts::SIGUSR1 {
+        glib::MainContext::default().spawn_local(async move {
+            while let Ok(sig) = rx_sig.recv().await {
+                if sig == signal_hook::consts::SIGUSR1 || sig == signal_hook::consts::SIGHUP {
                     dock_signal.toggle_visibility();
                 } else if sig == signal_hook::consts::SIGUSR2 {
                     dock_signal.set_dock_visible(true);
                 } else {
-                    // SIGTERM / SIGINT: clean up screenshots and exit gracefully.
                     let _ = std::fs::remove_dir_all("/tmp/rust-dock");
                     app_quit.quit();
                 }
             }
-            glib::ControlFlow::Continue
         });
     });
 

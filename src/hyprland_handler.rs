@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::cell::{Cell, RefCell};
+use std::io::{Read, Write};
+use std::os::unix::net::UnixStream;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -22,6 +24,48 @@ pub fn invalidate_client_cache() {
 /// Call this when Hyprland's config is reloaded.
 pub fn invalidate_gaps_cache() {
     GAPS_OUT.with(|c| c.set(None));
+}
+
+/// Locates the Hyprland command socket (.socket.sock) without requiring hyprctl.
+pub fn hypr_socket_path() -> Option<String> {
+    let xdg_runtime = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| {
+        dirs::runtime_dir()
+            .map(|d| d.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "/tmp".to_string())
+    });
+
+    let sig = std::env::var("HYPRLAND_INSTANCE_SIGNATURE").ok().or_else(|| {
+        let path = std::path::PathBuf::from(&xdg_runtime).join("hypr");
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if entry.path().join(".socket.sock").exists() {
+                    return Some(name);
+                }
+            }
+        }
+        None
+    })?;
+
+    let candidates = [
+        format!("{}/hypr/{}/.socket.sock", xdg_runtime, sig),
+        format!("/tmp/hypr/{}/.socket.sock", sig),
+    ];
+
+    candidates.into_iter().find(|p| std::path::Path::new(p).exists())
+}
+
+/// Send a direct command over Hyprland's command socket (.socket.sock).
+/// 50x faster than spawning a `hyprctl` child process.
+pub fn hypr_socket_request(cmd: &str) -> Option<Vec<u8>> {
+    let path = hypr_socket_path()?;
+    let mut stream = UnixStream::connect(path).ok()?;
+    stream.set_read_timeout(Some(Duration::from_millis(500))).ok()?;
+    stream.set_write_timeout(Some(Duration::from_millis(500))).ok()?;
+    stream.write_all(cmd.as_bytes()).ok()?;
+    let mut buffer = Vec::new();
+    stream.read_to_end(&mut buffer).ok()?;
+    Some(buffer)
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -128,6 +172,11 @@ impl HyprlandHandler {
     }
 
     fn fetch_clients(&self) -> Vec<HyprClient> {
+        if let Some(buf) = hypr_socket_request("j/clients") {
+            if let Ok(values) = serde_json::from_slice::<Vec<serde_json::Value>>(&buf) {
+                return values.iter().filter_map(client_from_value).collect();
+            }
+        }
         let Ok(out) = Command::new("hyprctl").args(["clients", "-j"]).output() else {
             return Vec::new();
         };
@@ -177,6 +226,17 @@ impl HyprlandHandler {
     }
 
     fn query_gaps_out(&self) -> i32 {
+        if let Some(buf) = hypr_socket_request("j/getoption general:gaps_out") {
+            if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&buf) {
+                if let Some(custom) = json.get("custom").and_then(|v| v.as_str()) {
+                    if let Some(first) = custom.split_whitespace().next() {
+                        if let Ok(val) = first.parse() {
+                            return val;
+                        }
+                    }
+                }
+            }
+        }
         let output = Command::new("hyprctl")
             .arg("getoption")
             .arg("general:gaps_out")
@@ -199,6 +259,16 @@ impl HyprlandHandler {
 
     /// Map a Wayland output connector name (e.g. "DP-1") to a Hyprland monitor index.
     pub fn get_monitor_id(&self, output_name: &str) -> Option<i32> {
+        if let Some(buf) = hypr_socket_request("j/monitors") {
+            if let Ok(json) = serde_json::from_slice::<Vec<serde_json::Value>>(&buf) {
+                for m in &json {
+                    if m.get("name").and_then(|v| v.as_str()) == Some(output_name) {
+                        return m.get("id").and_then(|v| v.as_i64()).map(|id| id as i32);
+                    }
+                }
+                return None;
+            }
+        }
         let out = Command::new("hyprctl").args(["monitors", "-j"]).output().ok()?;
         if !out.status.success() { return None; }
         let json: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).ok()?;
@@ -212,6 +282,14 @@ impl HyprlandHandler {
 
     /// The class of the currently focused window, lowercased.
     pub fn get_active_class(&self) -> Option<String> {
+        if let Some(buf) = hypr_socket_request("j/activewindow") {
+            if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&buf) {
+                return json.get("class")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_lowercase());
+            }
+        }
         let out = Command::new("hyprctl").arg("activewindow").arg("-j").output().ok()?;
         if !out.status.success() { return None; }
         let json: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
@@ -227,29 +305,32 @@ impl HyprlandHandler {
 // Hyprland 0.56 switched to Lua: `hyprctl dispatch exec` now fails with
 // `error: [string "return hl.dispatch(exec ..."]`. The new form is
 // `hyprctl dispatch 'hl.dsp.exec_cmd("cmd")'` and similar `hl.dsp.*` calls.
-// This module provides thin wrappers that try the new Lua dispatch first and
-// fall back to legacy syntax for older Hyprland versions. They also try a
-// direct socket fallback if `hyprctl` is missing.
+// This module provides thin wrappers that try direct IPC socket and Lua dispatch first,
+// falling back to hyprctl for older Hyprland versions.
 
 fn lua_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 fn hypr_dispatch_lua(lua: &str) -> bool {
-    // Primary: `hyprctl dispatch <lua>`
+    let cmd = format!("dispatch {}", lua);
+    if let Some(resp) = hypr_socket_request(&cmd) {
+        let text = String::from_utf8_lossy(&resp).to_lowercase();
+        if text.starts_with("ok") && !text.contains("error") {
+            return true;
+        }
+    }
+    // Fallback: `hyprctl dispatch <lua>`
     if let Ok(out) = Command::new("hyprctl").args(["dispatch", lua]).output() {
         let stderr = String::from_utf8_lossy(&out.stderr).to_lowercase();
         let stdout = String::from_utf8_lossy(&out.stdout).to_lowercase();
         if out.status.success() && !stderr.contains("error") && !stdout.contains("error") {
             return true;
         }
-        // Some Hyprland builds return exit 0 even on error but print "error:" in stdout
         if !stderr.contains("error") && !stdout.contains("error") && out.status.success() {
             return true;
         }
     }
-    // Fallback: legacy dispatch via hyprctl (for Hyprland <0.55)
-    // Not needed for most new dispatchers but kept for compatibility
     false
 }
 

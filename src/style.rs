@@ -12,6 +12,7 @@ thread_local! {
 /// Returns true (and updates the stored mtime) if the pywal colors file
 /// has been modified since the last call. Used as a fallback when the
 /// inotify watcher misses events (atomic rename, directory recreation, etc.).
+#[allow(dead_code)]
 pub fn pywal_file_changed() -> bool {
     let path = match dirs::cache_dir() {
         Some(mut p) => { p.push("wal/colors-waybar.css"); p }

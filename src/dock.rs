@@ -9,7 +9,7 @@ use crate::hyprland_handler::{HyprlandHandler, HyprClient, capture_window_screen
 use crate::app_info::AppInfo;
 use std::rc::{Rc, Weak};
 use std::cell::{RefCell, Cell};
-use std::sync::{mpsc, Arc};
+use std::sync::Arc;
 
 
 // ── Preview window state shared across all buttons ──────────────────────────
@@ -1154,6 +1154,38 @@ impl Dock {
         let app_clone = app.clone();
         btn.connect_clicked(move |_| { focus_or_launch(&app_clone); });
 
+        // ── Middle-click: launch new instance ────────────────────────────
+        let app_middle = app.clone();
+        let mclick = gtk4::GestureClick::new();
+        mclick.set_button(2);
+        mclick.connect_pressed(move |_, _, _, _| {
+            app_middle.launch();
+        });
+        btn.add_controller(mclick);
+
+        // ── Scroll: cycle through windows of this app ────────────────────
+        let scroll = gtk4::EventControllerScroll::new(gtk4::EventControllerScrollFlags::VERTICAL);
+        let class_scroll = app.id.clone();
+        scroll.connect_scroll(move |_, _dx, dy| {
+            let clients = HyprlandHandler::new().get_clients_for_class(&class_scroll);
+            if clients.len() > 1 {
+                let active = HyprlandHandler::new().get_active_class().unwrap_or_default();
+                let cur_idx = clients.iter().position(|c| c.class.to_lowercase() == active).unwrap_or(0);
+                let next_idx = if dy > 0.0 {
+                    (cur_idx + 1) % clients.len()
+                } else if dy < 0.0 {
+                    (cur_idx + clients.len() - 1) % clients.len()
+                } else {
+                    cur_idx
+                };
+                crate::hyprland_handler::hypr_focus_window(&clients[next_idx].address);
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+        btn.add_controller(scroll);
+
         // ── Drag & drop to reorder pinned apps ───────────────────────────
         if pinned {
             let drag = gtk4::DragSource::new();
@@ -1337,6 +1369,7 @@ fn build_preview_content(
     dock_pos: &str,
     thumb_w:  i32,
     thumb_h:  i32,
+    ps:       &Rc<RefCell<PreviewState>>,
 ) -> Box {
     let orientation = match dock_pos {
         "left" | "right" => Orientation::Vertical,
@@ -1416,11 +1449,21 @@ fn build_preview_content(
         thumb.append(&ico);
         card.append(&thumb);
 
-        // Focus on click anywhere on the card
-        let addr_focus = win.address.clone();
+        // Click on card: left-click focuses window and hides preview, middle-click closes window
+        let addr_card = win.address.clone();
+        let ps_card = Rc::clone(ps);
         let click_g = gtk4::GestureClick::new();
-        click_g.connect_pressed(move |_, _, _, _| {
-            crate::hyprland_handler::hypr_focus_window(&addr_focus);
+        click_g.connect_pressed(move |gesture, _, _, _| {
+            let button = gesture.current_button();
+            if button == 2 {
+                crate::hyprland_handler::hypr_close_window(&addr_card);
+            } else if button == 1 {
+                crate::hyprland_handler::hypr_focus_window(&addr_card);
+                let mut s = ps_card.borrow_mut();
+                s.win.hide();
+                s.visible = false;
+                s.active_class = String::new();
+            }
         });
         card.add_controller(click_g);
 
@@ -1455,7 +1498,7 @@ fn update_preview_content(
     } else {
         (264i32, 196i32, 260i32, 160i32)
     };
-    let content = build_preview_content(&windows, icon, &dock_pos, thumb_w, thumb_h);
+    let content = build_preview_content(&windows, icon, &dock_pos, thumb_w, thumb_h, ps);
 
     let mut s = ps.borrow_mut();
 
@@ -1603,67 +1646,61 @@ fn spawn_screenshot_updates(
     content:       Box,
 ) {
     let windows = Rc::new(windows);
-    let (tx, rx) = mpsc::channel::<(usize, String)>();
-    let rx = Rc::new(RefCell::new(rx));
+    let (tx, rx) = async_channel::unbounded::<(usize, String)>();
     let content_ptr = content.clone();
     let pending = Arc::new(std::sync::Mutex::new(vec![false; windows.len()]));
 
     spawn_pending_captures(&windows, &tx, &pending);
 
-    glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
-        let s = preview_state.borrow();
-        if !s.visible { return glib::ControlFlow::Break; }
-        if let Some(child) = s.win.child() {
-            if child != content_ptr.clone().upcast::<gtk4::Widget>() {
-                return glib::ControlFlow::Break;
-            }
-        } else {
-            return glib::ControlFlow::Break;
-        }
-        drop(s);
+    let ps = Rc::clone(&preview_state);
+    let wins = Rc::clone(&windows);
+    let pend = Arc::clone(&pending);
+    let tx_loop = tx.clone();
 
-        loop {
-            match rx.borrow().try_recv() {
-                Ok((idx, path)) => {
-                    let mut card_w = content_ptr.first_child();
-                    let mut i = 0;
-                    while let Some(w) = card_w {
-                        if i == idx {
-                            // Card is a Box: first child = header, second child = thumb.
-                            if let Ok(card) = w.clone().downcast::<Box>() {
-                                if let Some(thumb_widget) = card.first_child()
-                                    .and_then(|h| h.next_sibling())
-                                {
-                                    if let Ok(thumb) = thumb_widget.downcast::<Box>() {
-                                        if let Some(old) = thumb.first_child() { thumb.remove(&old); }
-                                        let pic = gtk4::Picture::builder()
-                                            .file(&gio::File::for_path(&path))
-                                            .halign(Align::Fill)
-                                            .valign(Align::Fill)
-                                            .hexpand(true)
-                                            .vexpand(true)
-                                            .can_shrink(true)
-                                            .css_classes(vec!["win-thumbnail".to_string()])
-                                            .build();
-                                        pic.set_content_fit(gtk4::ContentFit::Cover);
-                                        thumb.append(&pic);
-                                    }
-                                }
-                            }
-                            break;
-                        }
-                        i += 1;
-                        card_w = w.next_sibling();
-                    }
+    glib::MainContext::default().spawn_local(async move {
+        while let Ok((idx, path)) = rx.recv().await {
+            let s = ps.borrow();
+            if !s.visible { break; }
+            if let Some(child) = s.win.child() {
+                if child != content_ptr.clone().upcast::<gtk4::Widget>() {
+                    break;
                 }
-                Err(mpsc::TryRecvError::Empty) => break,
-                Err(mpsc::TryRecvError::Disconnected) => return glib::ControlFlow::Break,
+            } else {
+                break;
             }
+            drop(s);
+
+            let mut card_w = content_ptr.first_child();
+            let mut i = 0;
+            while let Some(w) = card_w {
+                if i == idx {
+                    // Card is a Box: first child = header, second child = thumb.
+                    if let Ok(card) = w.clone().downcast::<Box>() {
+                        if let Some(thumb_widget) = card.first_child().and_then(|h| h.next_sibling()) {
+                            if let Ok(thumb) = thumb_widget.downcast::<Box>() {
+                                if let Some(old) = thumb.first_child() { thumb.remove(&old); }
+                                let pic = gtk4::Picture::builder()
+                                    .file(&gio::File::for_path(&path))
+                                    .halign(Align::Fill)
+                                    .valign(Align::Fill)
+                                    .hexpand(true)
+                                    .vexpand(true)
+                                    .can_shrink(true)
+                                    .css_classes(vec!["win-thumbnail".to_string()])
+                                    .build();
+                                pic.set_content_fit(gtk4::ContentFit::Cover);
+                                thumb.append(&pic);
+                            }
+                        }
+                    }
+                    break;
+                }
+                i += 1;
+                card_w = w.next_sibling();
+            }
+
+            spawn_pending_captures(&wins, &tx_loop, &pend);
         }
-
-        spawn_pending_captures(&windows, &tx, &pending);
-
-        glib::ControlFlow::Continue
     });
 }
 
@@ -1671,7 +1708,7 @@ const MAX_CONCURRENT_CAPTURES: usize = 4;
 
 fn spawn_pending_captures(
     windows: &Rc<Vec<HyprClient>>,
-    tx:      &mpsc::Sender<(usize, String)>,
+    tx:      &async_channel::Sender<(usize, String)>,
     pending: &Arc<std::sync::Mutex<Vec<bool>>>,
 ) {
     let mut pend = pending.lock().unwrap();
@@ -1691,7 +1728,7 @@ fn spawn_pending_captures(
             let pend2 = Arc::clone(pending);
             std::thread::spawn(move || {
                 if let Some(path) = capture_window_screenshot(&addr, &sid, at, size) {
-                    let _ = tx2.send((idx, path));
+                    let _ = tx2.send_blocking((idx, path));
                 }
                 if let Ok(mut p) = pend2.lock() { p[idx] = false; }
             });
@@ -1750,9 +1787,24 @@ fn create_icon_image(icon_name: &str) -> Image {
     Image::from_icon_name("application-x-executable")
 }
 
+thread_local! {
+    /// Cache resolved icon file paths so we only walk the disk once per icon.
+    static ICON_CACHE: RefCell<std::collections::HashMap<String, Option<std::path::PathBuf>>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
 /// Search for a matching icon file across every XDG data directory, checking
 /// all common hicolor sizes, scalable, and pixmaps in priority order.
 fn find_icon_file(name: &str) -> Option<std::path::PathBuf> {
+    if let Some(cached) = ICON_CACHE.with(|c| c.borrow().get(name).cloned()) {
+        return cached;
+    }
+    let res = find_icon_file_uncached(name);
+    ICON_CACHE.with(|c| c.borrow_mut().insert(name.to_string(), res.clone()));
+    res
+}
+
+fn find_icon_file_uncached(name: &str) -> Option<std::path::PathBuf> {
     // Build the list of data directories to search (XDG_DATA_DIRS + HOME dirs).
     let xdg: Vec<std::path::PathBuf> = std::env::var("XDG_DATA_DIRS")
         .unwrap_or_else(|_| "/usr/local/share:/usr/share".to_string())
