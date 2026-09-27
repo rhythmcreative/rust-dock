@@ -97,7 +97,16 @@ fn main() {
 
     let config_activate = Rc::clone(&config_rc);
     let cli_activate = Rc::clone(&cli_rc);
+    let dock_instance: Rc<RefCell<Option<Rc<Dock>>>> = Rc::new(RefCell::new(None));
+    let dock_instance_activate = Rc::clone(&dock_instance);
+
     app.connect_activate(move |app| {
+        if let Some(existing_dock) = dock_instance_activate.borrow().as_ref() {
+            existing_dock.set_dock_visible(true);
+            existing_dock.refresh();
+            return;
+        }
+
         // Register Flatpak (and other XDG) icon directories with GTK's icon theme
         // so that app icons installed via Flatpak are resolved correctly.
         if let Some(display) = gtk4::gdk::Display::default() {
@@ -114,6 +123,7 @@ fn main() {
 
         let dock = Rc::new(Dock::new(app, Rc::clone(&config_activate)));
         dock.init();
+        *dock_instance_activate.borrow_mut() = Some(Rc::clone(&dock));
 
         // --- Hyprland socket listener (0ms latency, zero polling) ---
         let (tx_hypr, rx_hypr) = async_channel::unbounded::<DockEvent>();
