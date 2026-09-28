@@ -141,6 +141,13 @@ pub fn load_css(config: &Config) {
             margin: 0;
             padding: 0;
         }}
+        /* Round the preview surface itself: the global gtk.css paints this
+           window with the panel colour and nothing else gives it a radius, so
+           the preview outline came out square. */
+        window.dock-preview-window,
+        window.dock-preview-window.background {{
+            border-radius: {preview_radius}px;
+        }}
         /* Same fix for the main dock window decoration node. */
         window:not(.dock-preview-window) decoration {{
             box-shadow: none;
@@ -149,15 +156,21 @@ pub fn load_css(config: &Config) {
         }}
         /* ── Preview panel ────────────────────────────────────────────────── */
         .preview-row {{
-            background-color: alpha(@background, {opacity});
+            /* Opaque on purpose: the layer-shell surface behind the panel is
+               painted by the global gtk.css and is not rounded, so a
+               translucent panel showed that square through its own corners. */
+            background-color: @background;
             border-radius: {preview_radius}px;
             border: none;
             padding: 10px;
         }}
-        .preview-row-bottom {{ border-bottom: none; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }}
-        .preview-row-top    {{ border-top: none;    border-top-left-radius: 0;    border-top-right-radius: 0;    }}
-        .preview-row-left   {{ border-left: none;   border-top-left-radius: 0;    border-bottom-left-radius: 0;  }}
-        .preview-row-right  {{ border-right: none;  border-top-right-radius: 0;   border-bottom-right-radius: 0; }}
+        /* The panel floats above the dock, so every corner is rounded. The old
+           dock-side variants flattened two corners and made the preview read as
+           a square slab. */
+        .preview-row-bottom,
+        .preview-row-top,
+        .preview-row-left,
+        .preview-row-right {{ border: none; border-radius: {preview_radius}px; }}
 
         /* ── Window preview cards (Windows taskbar style) ─────────────────── */
         /* No borders and no box-shadow: on a transparent layer-shell surface a
@@ -165,7 +178,7 @@ pub fn load_css(config: &Config) {
         .win-card {{
             border-radius: {card_radius}px;
             border: none;
-            background-color: alpha(@background, 0.92);
+            background-color: alpha(@background, 0.96);
             min-width: {card_min_w}px;
             transition: background-color 140ms ease;
         }}
@@ -389,22 +402,25 @@ pub fn load_css(config: &Config) {
     // rounded card. This second provider is scoped to that one window and
     // registered at user priority, so the preview really is rounded while the
     // main dock panel keeps its original look.
-    let surface_css = "
-        window.dock-preview-window,
-        window.dock-preview-window.background,
-        window.dock-preview-window.background.csd,
-        window.dock-preview-window > contents,
-        window.dock-preview-window contents,
-        window.dock-preview-window decoration,
-        window.dock-preview-window decoration:backdrop {
-            background: transparent;
-            background-color: transparent;
-            border: none;
-            box-shadow: none;
-            margin: 0;
-            padding: 0;
-        }
-    ";
+    // RADIUS is substituted below so the surface follows the configured radius.
+    let surface_css = "\
+        window.dock-preview-window,\
+        window.dock-preview-window.background,\
+        window.dock-preview-window.background.csd,\
+        window.dock-preview-window > contents,\
+        window.dock-preview-window contents,\
+        window.dock-preview-window decoration,\
+        window.dock-preview-window decoration:backdrop {\
+            background: transparent;\
+            background-color: transparent;\
+            border: none;\
+            box-shadow: none;\
+            margin: 0;\
+            padding: 0;\
+            border-radius: RADIUS;\
+        }\
+    "
+    .replace("RADIUS", &format!("{}px", config.radius + 4));
 
     SURFACE_PROVIDER.with(|slot| {
         let mut slot = slot.borrow_mut();
@@ -421,6 +437,6 @@ pub fn load_css(config: &Config) {
             }
             prov
         });
-        provider.load_from_data(surface_css);
+        provider.load_from_data(&surface_css);
     });
 }
