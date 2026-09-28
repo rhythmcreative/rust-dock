@@ -358,25 +358,17 @@ pub fn load_css(config: &Config) {
 
     PROVIDER.with(|slot| {
         let mut slot = slot.borrow_mut();
-        // Drop the previous provider first: reusing it would append the new
-        // CSS to the old one (unbounded growth) and keep stale @define-color.
-        if let Some(old) = slot.take() {
+        let provider = slot.get_or_insert_with(|| {
+            let prov = CssProvider::new();
             if let Some(display) = gtk4::gdk::Display::default() {
-                gtk4::style_context_remove_provider_for_display(&display, &old);
+                gtk4::style_context_add_provider_for_display(
+                    &display,
+                    &prov,
+                    gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                );
             }
-        }
-        let provider = CssProvider::new();
-        if let Some(display) = gtk4::gdk::Display::default() {
-            // USER priority (not APPLICATION): the user's global gtk.css defines
-            // `window { background-color: ... }` at USER priority, which would
-            // otherwise override the dock's own pywal colours.
-            gtk4::style_context_add_provider_for_display(
-                &display,
-                &provider,
-                gtk4::STYLE_PROVIDER_PRIORITY_USER,
-            );
-        }
+            prov
+        });
         provider.load_from_data(&css_data);
-        *slot = Some(provider);
     });
 }
