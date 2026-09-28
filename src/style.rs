@@ -150,25 +150,33 @@ pub fn load_css(config: &Config) {
         .preview-row {{
             background-color: alpha(@background, {opacity});
             border-radius: {preview_radius}px;
+            border: 1px solid alpha(@color1, 0.35);
             padding: 10px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.60);
         }}
+        .preview-row-bottom {{ border-bottom: none; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }}
+        .preview-row-top    {{ border-top: none;    border-top-left-radius: 0;    border-top-right-radius: 0;    }}
+        .preview-row-left   {{ border-left: none;   border-top-left-radius: 0;    border-bottom-left-radius: 0;  }}
+        .preview-row-right  {{ border-right: none;  border-top-right-radius: 0;   border-bottom-right-radius: 0; }}
 
         /* ── Window preview cards (Windows taskbar style) ─────────────────── */
         /* Box + Overflow::Hidden clips header + thumbnail to border-radius. */
         .win-card {{
             border-radius: {card_radius}px;
+            border: 1px solid alpha(@color1, 0.22);
             background-color: alpha(@background, 0.95);
             min-width: {card_min_w}px;
-            transition: border-color 140ms ease;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.45);
+            transition: border-color 140ms ease, box-shadow 140ms ease;
         }}
         .win-card:hover {{
             border-color: alpha(@color2, 0.80);
+            box-shadow: 0 6px 22px rgba(0,0,0,0.65);
         }}
         /* Header bar: icon + title + close button. */
         .win-header {{
             background-color: alpha(@background, 0.75);
-            border-top-left-radius: {thumb_radius}px;
-            border-top-right-radius: {thumb_radius}px;
+            border-bottom: 1px solid alpha(@color1, 0.18);
             padding: 5px 6px 5px 16px;
         }}
         .win-title {{
@@ -195,16 +203,11 @@ pub fn load_css(config: &Config) {
         }}
         /* Thumbnail area. */
         .win-thumb-box {{
+            background-color: alpha(#000000, 0.25);
             min-height: {thumb_min_h}px;
             min-width: {thumb_min_w}px;
-            border-bottom-left-radius: {thumb_radius}px;
-            border-bottom-right-radius: {thumb_radius}px;
-            overflow: hidden;
         }}
-        .win-thumbnail {{
-            border-radius: {thumb_radius}px;
-        }}
-
+        .win-thumbnail {{ border-radius: 0; }}
         .preview-placeholder {{ opacity: 0.28; }}
 
         /* ── Right-click context menu ─────────────────────── */
@@ -325,7 +328,6 @@ pub fn load_css(config: &Config) {
     ws_radius = (config.radius - 2).max(4),
     preview_radius = config.radius + 4,
     card_radius = (config.radius + 6).max(16),
-    thumb_radius = (config.radius + 4).max(14),
     card_min_w = if config.compact_preview { 200 } else { 260 },
     thumb_min_h = if config.compact_preview { 108 } else { 160 },
     thumb_min_w = if config.compact_preview { 200 } else { 260 },

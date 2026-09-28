@@ -183,10 +183,7 @@ fn main() {
                             let is_css = e.paths.iter().any(|p| {
                                 p.extension().map_or(false, |ext| ext == "css")
                             });
-                            if is_css {
-                                // Accept any change kind: modify/create/rename/move.
-                                // pywal may replace the file atomically (rename events
-                                // are neither modify nor create on all backends).
+                            if is_css && (e.kind.is_modify() || e.kind.is_create()) {
                                 let _ = tx_pywal.send_blocking(());
                             }
                         }
@@ -272,7 +269,6 @@ fn main() {
                 signal_hook::consts::SIGUSR1,
                 signal_hook::consts::SIGUSR2,
                 signal_hook::consts::SIGHUP,
-                signal_hook::consts::SIGWINCH,
                 signal_hook::consts::SIGTERM,
                 signal_hook::consts::SIGINT,
             ]) {
@@ -283,7 +279,6 @@ fn main() {
         });
 
         let dock_signal = Rc::clone(&dock);
-        let config_signal = Rc::clone(&config_activate);
         let app_quit = app.clone();
         glib::MainContext::default().spawn_local(async move {
             while let Ok(sig) = rx_sig.recv().await {
@@ -291,12 +286,6 @@ fn main() {
                     dock_signal.toggle_visibility();
                 } else if sig == signal_hook::consts::SIGUSR2 {
                     dock_signal.set_dock_visible(true);
-                } else if sig == signal_hook::consts::SIGWINCH {
-                    // Explicit theme reload (sent by pywal sync, deterministic).
-                    let cfg = config_signal.borrow();
-                    style::load_css(&*cfg);
-                    drop(cfg);
-                    dock_signal.refresh();
                 } else {
                     let _ = std::fs::remove_dir_all("/tmp/rust-dock");
                     app_quit.quit();
