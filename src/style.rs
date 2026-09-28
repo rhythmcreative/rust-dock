@@ -5,6 +5,7 @@ use std::time::SystemTime;
 
 thread_local! {
     static PROVIDER: RefCell<Option<CssProvider>> = const { RefCell::new(None) };
+    static SURFACE_PROVIDER: RefCell<Option<CssProvider>> = const { RefCell::new(None) };
     /// mtime of colors-waybar.css at last CSS load — used for polling fallback.
     static LAST_PYWAL_MTIME: RefCell<Option<SystemTime>> = const { RefCell::new(None) };
 }
@@ -380,5 +381,46 @@ pub fn load_css(config: &Config) {
             prov
         });
         provider.load_from_data(&css_data);
+    });
+
+    // The preview is its own layer-shell surface. The global gtk.css paints
+    // `window { background-color: ... }` at user priority, which beats the
+    // transparent rule above and leaves an opaque square slab behind the
+    // rounded card. This second provider is scoped to that one window and
+    // registered at user priority, so the preview really is rounded while the
+    // main dock panel keeps its original look.
+    let surface_css = "
+        window.dock-preview-window,
+        window.dock-preview-window.background,
+        window.dock-preview-window.background.csd,
+        window.dock-preview-window > contents,
+        window.dock-preview-window contents,
+        window.dock-preview-window decoration,
+        window.dock-preview-window decoration:backdrop {
+            background: transparent;
+            background-color: transparent;
+            border: none;
+            box-shadow: none;
+            margin: 0;
+            padding: 0;
+        }
+    ";
+
+    SURFACE_PROVIDER.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let provider = slot.get_or_insert_with(|| {
+            let prov = CssProvider::new();
+            if let Some(display) = gtk4::gdk::Display::default() {
+                // THEME priority is the only one above USER, which is where the
+                // global gtk.css (window background) lives.
+                gtk4::style_context_add_provider_for_display(
+                    &display,
+                    &prov,
+                    gtk4::STYLE_PROVIDER_PRIORITY_THEME,
+                );
+            }
+            prov
+        });
+        provider.load_from_data(surface_css);
     });
 }
