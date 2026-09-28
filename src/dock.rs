@@ -348,18 +348,17 @@ impl Dock {
 
         // Motion controller on the preview window itself.
         //
-        // Problem: the preview is a Layer::Overlay surface that sits just above
-        // the dock. When the cursor moves upward from the dock it crosses this
-        // surface, triggering `connect_enter`. If we simply cancelled the
-        // hide_timer there the preview would never hide (the hide_timer set by
-        // the button's leave handler is gone and nothing restarts it).
+        // The preview is a Layer::Overlay surface just above the dock. When the
+        // cursor moves upward from the dock it crosses this surface, so the
+        // button's leave handler starts the hide timer while the cursor is
+        // still on its way to a card.
         //
-        // Fix: instead of fully cancelling the hide_timer we replace it with a
-        // longer-lived one (1 500 ms). This keeps the preview alive while the
-        // user intentionally hovers over a preview card to click it, but
-        // guarantees it will disappear even if the cursor only crossed the
-        // surface accidentally. When the cursor leaves the preview we trim the
-        // delay down to 80 ms so the hide feels instant.
+        // On enter we cancel that timer and arm a long safety net instead. The
+        // previous short (1.5 s) replacement timer expired before a normal
+        // hover could reach the cards, which made moving onto the preview feel
+        // broken. Leaving the preview hides it after 80 ms, so it can never
+        // linger, and the safety net covers the case where no leave event is
+        // delivered at all.
         let ht_preview  = Rc::clone(&hide_timer);
         let st_preview  = Rc::clone(&show_timer);
         let ps_preview  = Rc::clone(&preview_state);
@@ -367,12 +366,12 @@ impl Dock {
         pv_motion.connect_enter(move |_, _, _| {
             if let Some(id) = st_preview.take() { safe_remove_source(id); }
 
-            // Cancel the existing hide_timer and start a longer replacement so
-            // the preview stays alive while the user interacts with a card.
+            // Keep the preview open while the cursor is on it. The 8 s safety
+            // net is a fallback only: the leave handler hides the preview.
             if let Some(id) = ht_preview.take() { safe_remove_source(id); }
             let ps2 = Rc::clone(&ps_preview);
             let ht2 = Rc::clone(&ht_preview);
-            let id = glib::timeout_add_local(std::time::Duration::from_millis(1500), move || {
+            let id = glib::timeout_add_local(std::time::Duration::from_millis(8000), move || {
                 ht2.set(None);
                 let mut s = ps2.borrow_mut();
                 s.win.hide();
