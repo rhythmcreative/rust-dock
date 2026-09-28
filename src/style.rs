@@ -150,7 +150,6 @@ pub fn load_css(config: &Config) {
         .preview-row {{
             background-color: alpha(@background, {opacity});
             border-radius: {preview_radius}px;
-            border: 1px solid alpha(@color1, 0.35);
             padding: 10px;
         }}
 
@@ -158,7 +157,6 @@ pub fn load_css(config: &Config) {
         /* Box + Overflow::Hidden clips header + thumbnail to border-radius. */
         .win-card {{
             border-radius: {card_radius}px;
-            border: 1px solid alpha(@color1, 0.22);
             background-color: alpha(@background, 0.95);
             min-width: {card_min_w}px;
             transition: border-color 140ms ease;
@@ -169,7 +167,6 @@ pub fn load_css(config: &Config) {
         /* Header bar: icon + title + close button. */
         .win-header {{
             background-color: alpha(@background, 0.75);
-            border-bottom: 1px solid alpha(@color1, 0.18);
             border-top-left-radius: {thumb_radius}px;
             border-top-right-radius: {thumb_radius}px;
             padding: 5px 6px 5px 16px;
