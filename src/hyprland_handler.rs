@@ -439,7 +439,7 @@ pub fn capture_window_screenshot(address: &str, stable_id: &Option<String>, at: 
                 .ok();
             if let Some(status) = result {
                 if status.success() {
-                    round_png_corners(&temp_path, 16);
+                    round_png_corners(&temp_path, 32);
                     return Some(temp_path);
                 }
             }
@@ -454,7 +454,7 @@ pub fn capture_window_screenshot(address: &str, stable_id: &Option<String>, at: 
 
     if let Some(status) = result {
         if status.success() {
-            round_png_corners(&temp_path, 16);
+            round_png_corners(&temp_path, 32);
             return Some(temp_path);
         }
     }

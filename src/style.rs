@@ -195,7 +195,6 @@ pub fn load_css(config: &Config) {
         }}
         /* Thumbnail area. */
         .win-thumb-box {{
-            background-color: alpha(#000000, 0.25);
             min-height: {thumb_min_h}px;
             min-width: {thumb_min_w}px;
             border-bottom-left-radius: {thumb_radius}px;
