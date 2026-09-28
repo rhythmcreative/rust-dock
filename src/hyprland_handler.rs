@@ -380,6 +380,43 @@ pub fn hypr_focus_workspace(ws_id: i32) {
     let _ = Command::new("hyprctl").args(["dispatch", "workspace", &ws_id.to_string()]).spawn();
 }
 
+/// Round the corners of a PNG in place (transparent corners).
+/// GTK does not reliably clip GtkPicture textures to CSS border-radius,
+/// so thumbnails are pre-rounded on CPU. Radius is in image pixels.
+fn round_png_corners(path: &str, radius: u32) {
+    let Ok(img) = image::open(path) else { return };
+    let mut rgba = img.to_rgba8();
+    let (w, h) = (rgba.width(), rgba.height());
+    if w == 0 || h == 0 {
+        return;
+    }
+    let r = radius.min(w / 2).min(h / 2);
+    let rf = r as f32;
+    for y in 0..h {
+        for x in 0..w {
+            let dx = if x < r {
+                rf - x as f32 - 1.0
+            } else if x >= w - r {
+                x as f32 - (w - r) as f32
+            } else {
+                -1.0
+            };
+            let dy = if y < r {
+                rf - y as f32 - 1.0
+            } else if y >= h - r {
+                y as f32 - (h - r) as f32
+            } else {
+                -1.0
+            };
+            if dx >= 0.0 && dy >= 0.0 && dx * dx + dy * dy > rf * rf {
+                let px = rgba.get_pixel_mut(x, y);
+                px.0 = [0, 0, 0, 0];
+            }
+        }
+    }
+    let _ = rgba.save(path);
+}
+
 /// Capture a screenshot of a specific window.
 /// Uses grim with scale 0.25 (reduced resolution = fast), no PNG compression.
 /// Falls back to geometry-based capture with the same scale.
@@ -402,6 +439,7 @@ pub fn capture_window_screenshot(address: &str, stable_id: &Option<String>, at: 
                 .ok();
             if let Some(status) = result {
                 if status.success() {
+                    round_png_corners(&temp_path, 16);
                     return Some(temp_path);
                 }
             }
@@ -416,6 +454,7 @@ pub fn capture_window_screenshot(address: &str, stable_id: &Option<String>, at: 
 
     if let Some(status) = result {
         if status.success() {
+            round_png_corners(&temp_path, 16);
             return Some(temp_path);
         }
     }

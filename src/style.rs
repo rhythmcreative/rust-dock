@@ -203,8 +203,7 @@ pub fn load_css(config: &Config) {
             overflow: hidden;
         }}
         .win-thumbnail {{
-            border-bottom-left-radius: {thumb_radius}px;
-            border-bottom-right-radius: {thumb_radius}px;
+            border-radius: {thumb_radius}px;
         }}
 
         .preview-placeholder {{ opacity: 0.28; }}
