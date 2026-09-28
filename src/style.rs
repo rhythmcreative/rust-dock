@@ -72,9 +72,7 @@ pub fn load_css(config: &Config) {
     let default_css = format!("
         /* ── Dock window (only rust-dock, not dock-preview) ─── */
         window:not(.dock-preview-window) {{
-            /* Opaque and identical to the global gtk.css `window_bg_color`, so
-               the panel keeps its current look while following pywal live. */
-            background-color: @background;
+            background-color: alpha(@background, {opacity});
             border-radius: {radius}px;
             border: 1px solid alpha(@color1, 0.35);
         }}
@@ -376,12 +374,7 @@ pub fn load_css(config: &Config) {
                 gtk4::style_context_add_provider_for_display(
                     &display,
                     &prov,
-                    /* USER priority: the global gtk.css defines
-                       `window { background-color: ... }` at USER priority and
-                       GTK never re-reads that file at runtime, so at
-                       APPLICATION priority the dock kept a stale colour until
-                       it was restarted. */
-                    gtk4::STYLE_PROVIDER_PRIORITY_USER,
+                    gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
                 );
             }
             prov
