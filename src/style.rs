@@ -80,6 +80,9 @@ pub fn load_css(config: &Config) {
         }}
         .dock-container {{
             padding: {padding}px;
+            /* Keep the panel at a stable, generous width: with few apps open it
+               used to shrink to a small stub. */
+            min-width: 280px;
             transition: transform 220ms cubic-bezier(0.4, 0, 1, 1), opacity 200ms ease;
         }}
         .dock-container.dock-sliding {{
