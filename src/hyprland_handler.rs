@@ -380,6 +380,48 @@ pub fn hypr_focus_workspace(ws_id: i32) {
     let _ = Command::new("hyprctl").args(["dispatch", "workspace", &ws_id.to_string()]).spawn();
 }
 
+/// Scale passed to grim when capturing preview thumbnails.
+/// Captures are 1/4 of the real window size, so anything measured in file
+/// pixels has to be multiplied by 1/SCALE to match on-screen pixels.
+const CAPTURE_SCALE: f32 = 0.25;
+
+/// Corner radius used for the preview thumbnails, in on-screen pixels.
+const THUMB_RADIUS_CSS: f32 = 16.0;
+
+/// Round the corners of a PNG in place (corners become transparent).
+///
+/// GTK does not clip widget content (GtkPicture) to the CSS border-radius, so
+/// live thumbnails stay square. Rounding them here is the only reliable way.
+fn round_png_corners(path: &str, radius_px: f32) {
+    let Ok(img) = image::open(path) else { return };
+    let mut rgba = img.to_rgba8();
+    let (w, h) = (rgba.width(), rgba.height());
+    if w < 4 || h < 4 {
+        return;
+    }
+    let r = radius_px.max(1.0).min(w as f32 / 2.0).min(h as f32 / 2.0);
+    for y in 0..h {
+        for x in 0..w {
+            let dx = if (x as f32) < r { r - x as f32 - 1.0 }
+                     else if x as f32 >= w as f32 - r { x as f32 - (w as f32 - r) }
+                     else { -1.0 };
+            let dy = if (y as f32) < r { r - y as f32 - 1.0 }
+                     else if y as f32 >= h as f32 - r { y as f32 - (h as f32 - r) }
+                     else { -1.0 };
+            if dx >= 0.0 && dy >= 0.0 && dx * dx + dy * dy > r * r {
+                rgba.get_pixel_mut(x, y).0 = [0, 0, 0, 0];
+            }
+        }
+    }
+    let _ = rgba.save(path);
+}
+
+/// Round the thumbnail corners after a capture, translating the on-screen
+/// radius into file pixels with the capture scale.
+fn round_thumbnail_corners(path: &str) {
+    round_png_corners(path, THUMB_RADIUS_CSS / CAPTURE_SCALE);
+}
+
 /// Capture a screenshot of a specific window.
 /// Uses grim with scale 0.25 (reduced resolution = fast), no PNG compression.
 /// Falls back to geometry-based capture with the same scale.
@@ -402,6 +444,7 @@ pub fn capture_window_screenshot(address: &str, stable_id: &Option<String>, at: 
                 .ok();
             if let Some(status) = result {
                 if status.success() {
+                    round_thumbnail_corners(&temp_path);
                     return Some(temp_path);
                 }
             }
@@ -416,6 +459,7 @@ pub fn capture_window_screenshot(address: &str, stable_id: &Option<String>, at: 
 
     if let Some(status) = result {
         if status.success() {
+            round_thumbnail_corners(&temp_path);
             return Some(temp_path);
         }
     }
