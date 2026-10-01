@@ -73,6 +73,26 @@ pub struct Cli {
     #[arg(short = 'm', long)]
     pub margin: Option<i32>,
 
+    /// Extra margin applied to the edge the dock is anchored to.
+    #[arg(long = "margin-top")]
+    pub margin_top: Option<i32>,
+
+    /// Extra margin applied to the opposite edge (used when FullScreen is on).
+    #[arg(long = "margin-bottom")]
+    pub margin_bottom: Option<i32>,
+
+    /// Extra margin applied to the left edge.
+    #[arg(long = "margin-left")]
+    pub margin_left: Option<i32>,
+
+    /// Extra margin applied to the right edge.
+    #[arg(long = "margin-right")]
+    pub margin_right: Option<i32>,
+
+    /// Span the whole screen length instead of centering on the anchor edge.
+    #[arg(long)]
+    pub full_screen: bool,
+
     /// Align the margin with Hyprland's gaps_out.
     #[arg(long = "system-gap")]
     pub system_gap: bool,
@@ -108,6 +128,11 @@ impl Cli {
         if self.style.is_some() { cfg.style = self.style.clone(); }
         if let Some(v) = &self.layer { cfg.layer = v.clone(); }
         if let Some(v) = self.margin { cfg.margin = v; }
+        if let Some(v) = self.margin_top { cfg.margin_top = v; }
+        if let Some(v) = self.margin_bottom { cfg.margin_bottom = v; }
+        if let Some(v) = self.margin_left { cfg.margin_left = v; }
+        if let Some(v) = self.margin_right { cfg.margin_right = v; }
+        if self.full_screen { cfg.full_screen = true; }
         if self.system_gap { cfg.system_gap_used = true; }
         if self.no_system_gap { cfg.system_gap_used = false; }
     }
