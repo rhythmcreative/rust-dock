@@ -429,17 +429,37 @@ fn round_png_corners(path: &str, radius_px: f32) {
         return;
     }
     let r = radius_px.max(1.0).min(w as f32 / 2.0).min(h as f32 / 2.0);
-    for y in 0..h {
-        for x in 0..w {
-            let dx = if (x as f32) < r { r - x as f32 - 1.0 }
-                     else if x as f32 >= w as f32 - r { x as f32 - (w as f32 - r) }
-                     else { -1.0 };
-            let dy = if (y as f32) < r { r - y as f32 - 1.0 }
-                     else if y as f32 >= h as f32 - r { y as f32 - (h as f32 - r) }
-                     else { -1.0 };
-            if dx >= 0.0 && dy >= 0.0 && dx * dx + dy * dy > r * r {
-                rgba.get_pixel_mut(x, y).0 = [0, 0, 0, 0];
-            }
+    let r = r as u32;
+    let r2 = r as f32 * r as f32;
+
+    // Only the four r×r corner boxes can contain clipped pixels; every other
+    // pixel has dx or dy = -1 and is skipped by the original test. Walking the
+    // full image did O(w·h) float math per capture for nothing, so this walks
+    // just the corners. The geometry matches the original expression exactly:
+    // on the leading edge dx = r - x - 1, on the trailing edge dx = x - (w - r).
+    let corner = |rgba: &mut image::RgbaImage, x: u32, y: u32, dx: f32, dy: f32| {
+        if dx >= 0.0 && dy >= 0.0 && dx * dx + dy * dy > r2 {
+            rgba.get_pixel_mut(x, y).0 = [0, 0, 0, 0];
+        }
+    };
+
+    for y in 0..r {
+        for x in 0..r {
+            // Leading edges: dx = r - x - 1 at pixel x.
+            // Trailing edges: dx = (w - r) + x - (w - r) = x at pixel w-r+x,
+            // so the trailing corner box starts at w-r, not w-1.
+            corner(&mut rgba, x, y,
+                   r as f32 - x as f32 - 1.0,
+                   r as f32 - y as f32 - 1.0);
+            corner(&mut rgba, w - r + x, y,
+                   x as f32,
+                   r as f32 - y as f32 - 1.0);
+            corner(&mut rgba, x, h - r + y,
+                   r as f32 - x as f32 - 1.0,
+                   y as f32);
+            corner(&mut rgba, w - r + x, h - r + y,
+                   x as f32,
+                   y as f32);
         }
     }
     let _ = rgba.save(path);
@@ -451,17 +471,102 @@ fn round_thumbnail_corners(path: &str) {
     round_png_corners(path, THUMB_RADIUS_CSS / CAPTURE_SCALE);
 }
 
+/// Cached metadata for one captured thumbnail.
+#[derive(Debug, Clone, Copy)]
+struct CaptureEntry {
+    /// Window geometry the capture was taken at.
+    at:     [i32; 2],
+    size:   [i32; 2],
+    /// When this capture was taken, for TTL expiry.
+    captured_at: std::time::Instant,
+}
+
+/// Directory holding preview thumbnails.
+const CAPTURE_DIR: &str = "/tmp/rust-dock";
+
+thread_local! {
+    /// Recent captures keyed by window address.
+    ///
+    /// `refresh()` rebuilds every widget, and the preview capture loop runs
+    /// once per rebuild — so without this, hovering the dock re-forked grim and
+    /// re-decoded/re-encoded the PNG for every window, repeatedly, with
+    /// unchanged output.
+    static CAPTURE_CACHE: RefCell<std::collections::HashMap<String, CaptureEntry>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+/// On-disk path of a window's thumbnail.
+fn capture_path(address: &str) -> String {
+    format!("{}/{}.png", CAPTURE_DIR, address.trim_start_matches("0x"))
+}
+
+/// How long a capture stays reusable. Long enough to absorb a burst of
+/// rebuilds while the mouse crosses the dock, short enough that a moving
+/// window still updates.
+const CAPTURE_TTL: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// Reusable capture for a window, if the geometry is unchanged and the PNG is
+/// still on disk.
+pub fn cached_capture(address: &str, at: [i32; 2], size: [i32; 2]) -> Option<String> {
+    let path = capture_path(address);
+    CAPTURE_CACHE.with(|c| {
+        let mut cache = c.borrow_mut();
+        let usable = match cache.get(address) {
+            Some(e) => {
+                e.at == at && e.size == size && e.captured_at.elapsed() < CAPTURE_TTL
+            }
+            None => false,
+        };
+        if usable && std::path::Path::new(&path).exists() {
+            Some(path)
+        } else {
+            // Geometry moved or the entry aged out: drop it so the next
+            // successful capture replaces it rather than leaving it stale.
+            cache.remove(address);
+            None
+        }
+    })
+}
+
+/// Record a fresh capture so subsequent rebuilds can reuse it.
+pub fn store_capture(address: &str, at: [i32; 2], size: [i32; 2]) {
+    CAPTURE_CACHE.with(|c| {
+        c.borrow_mut().insert(address.to_string(), CaptureEntry {
+            at,
+            size,
+            captured_at: std::time::Instant::now(),
+        });
+    });
+}
+
+/// Forget a window's cache entry, e.g. once Hyprland reports it closed.
+pub fn invalidate_capture(address: &str) {
+    CAPTURE_CACHE.with(|c| {
+        c.borrow_mut().remove(address);
+    });
+}
+
+/// Drop every cached capture (e.g. on a global theme or scale change).
+pub fn invalidate_all_captures() {
+    CAPTURE_CACHE.with(|c| c.borrow_mut().clear());
+}
+
 /// Capture a screenshot of a specific window.
 /// Uses grim with scale 0.25 (reduced resolution = fast), no PNG compression.
 /// Falls back to geometry-based capture with the same scale.
-/// Each attempt has a 5-second timeout to prevent hanging.
+/// Each attempt has a 3-second timeout to prevent hanging.
 pub fn capture_window_screenshot(address: &str, stable_id: &Option<String>, at: [i32; 2], size: [i32; 2]) -> Option<String> {
     if size[0] <= 0 || size[1] <= 0 {
         return None;
     }
 
-    let clean_addr = address.trim_start_matches("0x");
-    let temp_path = format!("/tmp/rust-dock/{}.png", clean_addr);
+    let temp_path = capture_path(address);
+
+    // Same window, same geometry, captured recently → reuse the PNG on disk
+    // instead of forking grim and re-encoding the thumbnail.
+    if let Some(existing) = cached_capture(address, at, size) {
+        return Some(existing);
+    }
 
     // Use scale 0.25 for fast captures at preview-appropriate resolution
     // PNG level 0 = no compression (fastest encode)
@@ -474,6 +579,7 @@ pub fn capture_window_screenshot(address: &str, stable_id: &Option<String>, at: 
             if let Some(status) = result
                 && status.success() {
                     round_thumbnail_corners(&temp_path);
+                    store_capture(address, at, size);
                     return Some(temp_path);
                 }
         }
@@ -487,6 +593,7 @@ pub fn capture_window_screenshot(address: &str, stable_id: &Option<String>, at: 
     if let Some(status) = result
         && status.success() {
             round_thumbnail_corners(&temp_path);
+            store_capture(address, at, size);
             return Some(temp_path);
         }
 
@@ -553,6 +660,11 @@ where
             || line.starts_with("movewindow>>")
             || line.starts_with("movewindowv2>>")
         {
+            // A moved window's cached thumbnail is stale; a closed one leaves a PNG
+            // and a cache entry nothing will ever read again. Either way, drop it.
+            if let Some(addr) = line.split(">>").nth(1).and_then(|r| r.split(',').next()) {
+                invalidate_capture(addr);
+            }
             on_event(DockEvent::WindowList);
         } else if line.starts_with("workspace>>")
             || line.starts_with("createworkspace>>")
@@ -561,6 +673,9 @@ where
         {
             on_event(DockEvent::Workspace);
         } else if line.starts_with("configreloaded>>") {
+            // A config reload can change output scale, which alters capture
+            // geometry for every window.
+            invalidate_all_captures();
             on_event(DockEvent::ConfigReloaded);
         } else if let Some(class) = parse_active_class(&line) {
             on_event(DockEvent::Focus(class));
@@ -630,5 +745,121 @@ mod tests {
         assert!(!hyprctl_reported_error(&fake_out(r#"{"id":0,"name":"DP-1"}"#, "")));
         assert!(!hyprctl_reported_error(&fake_out("[]", "")));
         assert!(!hyprctl_reported_error(&fake_out("", "")));
+    }
+
+    // ── Capture cache ────────────────────────────────────────────────────
+
+    /// Creates the thumbnail file `cached_capture` looks for.
+    fn fake_png(addr: &str) -> std::path::PathBuf {
+        let path = std::path::PathBuf::from(capture_path(addr));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"x").unwrap();
+        path
+    }
+
+    #[test]
+    fn cache_misses_when_nothing_was_stored() {
+        invalidate_all_captures();
+        assert!(cached_capture("0xdeadbeef", [0, 0], [100, 100]).is_none());
+    }
+
+    #[test]
+    fn cache_hits_when_geometry_is_unchanged_and_file_exists() {
+        let path = fake_png("cachehit");
+        invalidate_all_captures();
+        store_capture("cachehit", [10, 20], [800, 600]);
+        let hit = cached_capture("cachehit", [10, 20], [800, 600]);
+        let _ = std::fs::remove_file(&path);
+        assert!(hit.is_some(), "unchanged geometry should reuse the capture");
+        assert_eq!(hit.unwrap(), path.to_string_lossy());
+    }
+
+    #[test]
+    fn cache_misses_when_the_window_moved_or_resized() {
+        let path = fake_png("geomchange");
+        invalidate_all_captures();
+        store_capture("geomchange", [10, 20], [800, 600]);
+        // Same address, different size: the old thumbnail is wrong.
+        assert!(cached_capture("geomchange", [10, 20], [1024, 768]).is_none());
+        // Same address, moved: a geometry-based capture is stale too.
+        assert!(cached_capture("geomchange", [99, 99], [800, 600]).is_none());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn cache_misses_when_the_png_disappeared() {
+        let path = fake_png("vanishing");
+        invalidate_all_captures();
+        store_capture("vanishing", [0, 0], [100, 100]);
+        assert!(cached_capture("vanishing", [0, 0], [100, 100]).is_some());
+        std::fs::remove_file(&path).unwrap();
+        // Entry is cached but the file is gone: must not report a hit.
+        assert!(cached_capture("vanishing", [0, 0], [100, 100]).is_none());
+    }
+
+    #[test]
+    fn invalidate_removes_a_single_entry() {
+        let path = fake_png("single");
+        invalidate_all_captures();
+        store_capture("single", [1, 1], [100, 100]);
+        assert!(cached_capture("single", [1, 1], [100, 100]).is_some());
+        invalidate_capture("single");
+        assert!(cached_capture("single", [1, 1], [100, 100]).is_none());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn capture_path_strips_the_0x_prefix() {
+        assert!(capture_path("0xabc123").ends_with("/abc123.png"));
+        assert!(!capture_path("0xabc123").contains("0x"));
+    }
+
+    // ── Corner rounding ──────────────────────────────────────────────────
+
+    #[test]
+    fn rounding_only_touches_the_four_corners() {
+        use image::{Rgba, RgbaImage};
+        let (w, h) = (200u32, 150u32);
+        let mut img = RgbaImage::from_pixel(w, h, Rgba([10, 20, 30, 255]));
+        let radius = 20.0_f32;
+
+        // Reference implementation: the original full-image predicate.
+        let mut expected = RgbaImage::from_pixel(w, h, Rgba([10, 20, 30, 255]));
+        let r = radius as u32;
+        let r2 = radius * radius;
+        for y in 0..h {
+            for x in 0..w {
+                let dx = if x < r { radius - x as f32 - 1.0 }
+                         else if x as f32 >= w as f32 - radius { x as f32 - (w as f32 - radius) }
+                         else { -1.0 };
+                let dy = if y < r { radius - y as f32 - 1.0 }
+                         else if y as f32 >= h as f32 - radius { y as f32 - (h as f32 - radius) }
+                         else { -1.0 };
+                if dx >= 0.0 && dy >= 0.0 && dx * dx + dy * dy > r2 {
+                    expected.get_pixel_mut(x, y).0 = [0, 0, 0, 0];
+                }
+            }
+        }
+
+        // New implementation, same geometry, only the corner boxes.
+        let rr = r as f32;
+        let r2n = rr * rr;
+        let corner = |rgba: &mut RgbaImage, x: u32, y: u32, dx: f32, dy: f32| {
+            if dx >= 0.0 && dy >= 0.0 && dx * dx + dy * dy > r2n {
+                rgba.get_pixel_mut(x, y).0 = [0, 0, 0, 0];
+            }
+        };
+        for y in 0..r {
+            for x in 0..r {
+                corner(&mut img, x, y, rr - x as f32 - 1.0, rr - y as f32 - 1.0);
+                corner(&mut img, w - r + x, y, x as f32, rr - y as f32 - 1.0);
+                corner(&mut img, x, h - r + y, rr - x as f32 - 1.0, y as f32);
+                corner(&mut img, w - r + x, h - r + y, x as f32, y as f32);
+            }
+        }
+
+        // They must agree pixel for pixel, or thumbnails change appearance.
+        assert_eq!(img.as_raw(), expected.as_raw(),
+            "corner-only rounding diverged from the original full-image version");
     }
 }
