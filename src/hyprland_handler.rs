@@ -11,7 +11,7 @@ thread_local! {
     static GAPS_OUT: Cell<Option<i32>> = const { Cell::new(None) };
     /// Short-lived cache for `hyprctl clients -j`. Invalidated on window events
     /// and automatically expired after CLIENT_CACHE_TTL.
-    static CLIENT_CACHE: RefCell<Option<(Instant, Vec<HyprClient>)>> = RefCell::new(None);
+    static CLIENT_CACHE: RefCell<Option<(Instant, Vec<HyprClient>)>> = const { RefCell::new(None) };
 }
 
 /// Discard the client list cache so the next call to `get_clients()` re-fetches.
@@ -53,6 +53,59 @@ pub fn hypr_socket_path() -> Option<String> {
     ];
 
     candidates.into_iter().find(|p| std::path::Path::new(p).exists())
+}
+
+/// Run a `hyprctl` command as a fallback for when the IPC socket is unreachable.
+///
+/// Always wrapped in `timeout` so a wedged Hyprland can't block the dock's main
+/// loop forever — `Command::output()` alone has no deadline and would hang the
+/// whole GTK thread. Prefer `hypr_socket_request` everywhere.
+pub fn hyprctl(args: &[&str]) -> Option<std::process::Output> {
+    const FALLBACK_TIMEOUT_SECS: &str = "1";
+    let out = Command::new("timeout")
+        .arg(FALLBACK_TIMEOUT_SECS)
+        .arg("hyprctl")
+        .args(args)
+        .output()
+        .ok()?;
+    // `timeout` exits 124 when it had to kill the child.
+    if !out.status.success() { return None; }
+    // hyprctl reports failures with exit code 0 and an "unknown request" /
+    // "error" line on stdout, so the status alone is not a success signal.
+    if hyprctl_reported_error(&out) { return None; }
+    Some(out)
+}
+
+/// True when a hyprctl invocation that exited 0 actually reported an error.
+///
+/// Hyprland's CLI is inconsistent here: `hyprctl bogus` prints "unknown
+/// request" and still exits 0, so trusting the status code silently turned
+/// failed fallbacks into apparent successes.
+fn hyprctl_reported_error(out: &std::process::Output) -> bool {
+    const MARKERS: [&str; 5] = ["unknown request", "error", "invalid", "failed", "no such"];
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let text = format!("{}{}", stdout.to_lowercase(), String::from_utf8_lossy(&out.stderr).to_lowercase());
+    // Every query this crate issues returns JSON. A payload that parses as a
+    // JSON object/array is never an error response, and scanning it for
+    // markers would misfire on arbitrary window titles like "Error Monitor".
+    if stdout.trim_start().starts_with('{') || stdout.trim_start().starts_with('[') {
+        return false;
+    }
+    MARKERS.iter().any(|m| text.contains(m))
+}
+
+/// Fire-and-forget `hyprctl` dispatch for older Hyprland versions that lack the
+/// Lua dispatch API. Bounded by the same 1s timeout as `hyprctl`.
+pub fn hyprctl_dispatch(lua: &str) -> bool {
+    hyprctl(&["dispatch", lua]).is_some()
+}
+
+/// Non-blocking legacy dispatch, wrapped in `timeout` so the child can't outlive
+/// the call if Hyprland is wedged.
+fn hyprctl_dispatch_spawn(arg: &str) {
+    let _ = Command::new("timeout")
+        .args(["1", "hyprctl", "dispatch", arg])
+        .spawn();
 }
 
 /// Send a direct command over Hyprland's command socket (.socket.sock).
@@ -172,15 +225,13 @@ impl HyprlandHandler {
     }
 
     fn fetch_clients(&self) -> Vec<HyprClient> {
-        if let Some(buf) = hypr_socket_request("j/clients") {
-            if let Ok(values) = serde_json::from_slice::<Vec<serde_json::Value>>(&buf) {
+        if let Some(buf) = hypr_socket_request("j/clients")
+            && let Ok(values) = serde_json::from_slice::<Vec<serde_json::Value>>(&buf) {
                 return values.iter().filter_map(client_from_value).collect();
             }
-        }
-        let Ok(out) = Command::new("hyprctl").args(["clients", "-j"]).output() else {
+        let Some(out) = hyprctl(&["clients", "-j"]) else {
             return Vec::new();
         };
-        if !out.status.success() { return Vec::new(); }
         match serde_json::from_slice::<Vec<serde_json::Value>>(&out.stdout) {
             Ok(values) => values.iter().filter_map(client_from_value).collect(),
             Err(e) => { log::warn!("could not parse `hyprctl clients -j`: {e}"); Vec::new() }
@@ -226,41 +277,26 @@ impl HyprlandHandler {
     }
 
     fn query_gaps_out(&self) -> i32 {
-        if let Some(buf) = hypr_socket_request("j/getoption general:gaps_out") {
-            if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&buf) {
-                if let Some(custom) = json.get("custom").and_then(|v| v.as_str()) {
-                    if let Some(first) = custom.split_whitespace().next() {
-                        if let Ok(val) = first.parse() {
+        if let Some(buf) = hypr_socket_request("j/getoption general:gaps_out")
+            && let Ok(json) = serde_json::from_slice::<serde_json::Value>(&buf)
+                && let Some(custom) = json.get("custom").and_then(|v| v.as_str())
+                    && let Some(first) = custom.split_whitespace().next()
+                        && let Ok(val) = first.parse() {
                             return val;
                         }
+        if let Some(out) = hyprctl(&["getoption", "general:gaps_out", "-j"])
+            && let Ok(json) = serde_json::from_slice::<serde_json::Value>(&out.stdout)
+                && let Some(custom) = json.get("custom").and_then(|v| v.as_str())
+                    && let Some(first) = custom.split_whitespace().next() {
+                        return first.parse().unwrap_or(0);
                     }
-                }
-            }
-        }
-        let output = Command::new("hyprctl")
-            .arg("getoption")
-            .arg("general:gaps_out")
-            .arg("-j")
-            .output();
-
-        if let Ok(out) = output {
-            if out.status.success() {
-                if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
-                    if let Some(custom) = json.get("custom").and_then(|v| v.as_str()) {
-                        if let Some(first) = custom.split_whitespace().next() {
-                            return first.parse().unwrap_or(0);
-                        }
-                    }
-                }
-            }
-        }
         0
     }
 
     /// Map a Wayland output connector name (e.g. "DP-1") to a Hyprland monitor index.
     pub fn get_monitor_id(&self, output_name: &str) -> Option<i32> {
-        if let Some(buf) = hypr_socket_request("j/monitors") {
-            if let Ok(json) = serde_json::from_slice::<Vec<serde_json::Value>>(&buf) {
+        if let Some(buf) = hypr_socket_request("j/monitors")
+            && let Ok(json) = serde_json::from_slice::<Vec<serde_json::Value>>(&buf) {
                 for m in &json {
                     if m.get("name").and_then(|v| v.as_str()) == Some(output_name) {
                         return m.get("id").and_then(|v| v.as_i64()).map(|id| id as i32);
@@ -268,9 +304,7 @@ impl HyprlandHandler {
                 }
                 return None;
             }
-        }
-        let out = Command::new("hyprctl").args(["monitors", "-j"]).output().ok()?;
-        if !out.status.success() { return None; }
+        let out = hyprctl(&["monitors", "-j"])?;
         let json: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).ok()?;
         for m in &json {
             if m.get("name").and_then(|v| v.as_str()) == Some(output_name) {
@@ -282,16 +316,14 @@ impl HyprlandHandler {
 
     /// The class of the currently focused window, lowercased.
     pub fn get_active_class(&self) -> Option<String> {
-        if let Some(buf) = hypr_socket_request("j/activewindow") {
-            if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&buf) {
+        if let Some(buf) = hypr_socket_request("j/activewindow")
+            && let Ok(json) = serde_json::from_slice::<serde_json::Value>(&buf) {
                 return json.get("class")
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty())
                     .map(|s| s.to_lowercase());
             }
-        }
-        let out = Command::new("hyprctl").arg("activewindow").arg("-j").output().ok()?;
-        if !out.status.success() { return None; }
+        let out = hyprctl(&["activewindow", "-j"])?;
         let json: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
         json.get("class")
             .and_then(|v| v.as_str())
@@ -301,7 +333,7 @@ impl HyprlandHandler {
 
 }
 
-/// ── Hyprland dispatch helpers (0.56+ Lua API) ──────────────────────────────────
+// ── Hyprland dispatch helpers (0.56+ Lua API) ──────────────────────────────────
 // Hyprland 0.56 switched to Lua: `hyprctl dispatch exec` now fails with
 // `error: [string "return hl.dispatch(exec ..."]`. The new form is
 // `hyprctl dispatch 'hl.dsp.exec_cmd("cmd")'` and similar `hl.dsp.*` calls.
@@ -312,6 +344,12 @@ fn lua_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+/// Try the Hyprland Lua dispatch API over IPC, falling back to `hyprctl`
+/// (1s-bounded) for older Hyprland versions. Returns true on success.
+pub fn hypr_dispatch_lua_pub(lua: &str) -> bool {
+    hypr_dispatch_lua(lua)
+}
+
 fn hypr_dispatch_lua(lua: &str) -> bool {
     let cmd = format!("dispatch {}", lua);
     if let Some(resp) = hypr_socket_request(&cmd) {
@@ -320,18 +358,9 @@ fn hypr_dispatch_lua(lua: &str) -> bool {
             return true;
         }
     }
-    // Fallback: `hyprctl dispatch <lua>`
-    if let Ok(out) = Command::new("hyprctl").args(["dispatch", lua]).output() {
-        let stderr = String::from_utf8_lossy(&out.stderr).to_lowercase();
-        let stdout = String::from_utf8_lossy(&out.stdout).to_lowercase();
-        if out.status.success() && !stderr.contains("error") && !stdout.contains("error") {
-            return true;
-        }
-        if !stderr.contains("error") && !stdout.contains("error") && out.status.success() {
-            return true;
-        }
-    }
-    false
+    // Fallback: `hyprctl dispatch <lua>` — same Lua form, so no per-version
+    // branch needed here. Bounded by the 1s timeout inside `hyprctl`.
+    hyprctl_dispatch(lua)
 }
 
 pub fn hypr_exec_cmd(cmd: &str) {
@@ -347,37 +376,37 @@ pub fn hypr_exec_cmd(cmd: &str) {
 pub fn hypr_focus_window(address: &str) {
     let lua = format!("hl.dsp.focus({{window=\"address:{}\"}})", address);
     if hypr_dispatch_lua(&lua) { return; }
-    let _ = Command::new("hyprctl").args(["dispatch", "focuswindow", &format!("address:{}", address)]).spawn();
+    hyprctl_dispatch_spawn(&format!("focuswindow address:{}", address));
 }
 
 pub fn hypr_close_window(address: &str) {
     let lua = format!("hl.dsp.window.close({{window=\"address:{}\"}})", address);
     if hypr_dispatch_lua(&lua) { return; }
-    let _ = Command::new("hyprctl").args(["dispatch", "closewindow", &format!("address:{}", address)]).spawn();
+    hyprctl_dispatch_spawn(&format!("closewindow address:{}", address));
 }
 
 pub fn hypr_move_to_workspace(address: &str, ws_id: i32) {
     let lua = format!("hl.dsp.window.move({{workspace={}, window=\"address:{}\"}})", ws_id, address);
     if hypr_dispatch_lua(&lua) { return; }
-    let _ = Command::new("hyprctl").args(["dispatch", "movetoworkspacesilent", &format!("{},address:{}", ws_id, address)]).spawn();
+    hyprctl_dispatch_spawn(&format!("movetoworkspacesilent {},address:{}", ws_id, address));
 }
 
 pub fn hypr_move_window_pixel(address: &str, x: i32, y: i32) {
     let lua = format!("hl.dsp.window.move({{x={}, y={}, window=\"address:{}\"}})", x, y, address);
     if hypr_dispatch_lua(&lua) { return; }
-    let _ = Command::new("hyprctl").args(["dispatch", "movewindowpixel", &format!("exact {} {},address:{}", x, y, address)]).spawn();
+    hyprctl_dispatch_spawn(&format!("movewindowpixel exact {} {},address:{}", x, y, address));
 }
 
 pub fn hypr_resize_window_pixel(address: &str, w: i32, h: i32) {
     let lua = format!("hl.dsp.window.resize({{x={}, y={}, window=\"address:{}\"}})", w, h, address);
     if hypr_dispatch_lua(&lua) { return; }
-    let _ = Command::new("hyprctl").args(["dispatch", "resizewindowpixel", &format!("exact {} {},address:{}", w, h, address)]).spawn();
+    hyprctl_dispatch_spawn(&format!("resizewindowpixel exact {} {},address:{}", w, h, address));
 }
 
 pub fn hypr_focus_workspace(ws_id: i32) {
     let lua = format!("hl.dsp.focus({{workspace={}}})", ws_id);
     if hypr_dispatch_lua(&lua) { return; }
-    let _ = Command::new("hyprctl").args(["dispatch", "workspace", &ws_id.to_string()]).spawn();
+    hyprctl_dispatch_spawn(&format!("workspace {}", ws_id));
 }
 
 /// Scale passed to grim when capturing preview thumbnails.
@@ -436,20 +465,18 @@ pub fn capture_window_screenshot(address: &str, stable_id: &Option<String>, at: 
 
     // Use scale 0.25 for fast captures at preview-appropriate resolution
     // PNG level 0 = no compression (fastest encode)
-    if let Some(sid) = stable_id {
-        if !sid.is_empty() {
+    if let Some(sid) = stable_id
+        && !sid.is_empty() {
             let result = std::process::Command::new("timeout")
                 .args(["3", "grim", "-s", "0.25", "-l", "0", "-t", "png", "-T", sid, &temp_path])
                 .status()
                 .ok();
-            if let Some(status) = result {
-                if status.success() {
+            if let Some(status) = result
+                && status.success() {
                     round_thumbnail_corners(&temp_path);
                     return Some(temp_path);
                 }
-            }
         }
-    }
 
     let geometry = format!("{},{} {}x{}", at[0], at[1], size[0], size[1]);
     let result = std::process::Command::new("timeout")
@@ -457,12 +484,11 @@ pub fn capture_window_screenshot(address: &str, stable_id: &Option<String>, at: 
         .status()
         .ok();
 
-    if let Some(status) = result {
-        if status.success() {
+    if let Some(status) = result
+        && status.success() {
             round_thumbnail_corners(&temp_path);
             return Some(temp_path);
         }
-    }
 
     None
 }
@@ -492,7 +518,7 @@ where
 
     let sig = std::env::var("HYPRLAND_INSTANCE_SIGNATURE")
         .or_else(|_| {
-            let out = Command::new("hyprctl").arg("instanceinfo").arg("-j").output()?;
+            let out = hyprctl(&["instanceinfo", "-j"]).ok_or("hyprctl instanceinfo unavailable")?;
             let json: serde_json::Value = serde_json::from_slice(&out.stdout)?;
             Ok::<String, Box<dyn std::error::Error>>(
                 json["signature"].as_str().unwrap_or("").to_string()
@@ -559,5 +585,50 @@ mod tests {
     fn ignores_non_focus_lines() {
         assert_eq!(parse_active_class("openwindow>>0x1,2,kitty,title"), None);
         assert_eq!(parse_active_class("workspace>>2"), None);
+    }
+
+    #[test]
+    fn lua_escape_neutralizes_quotes_and_backslashes() {
+        // An unescaped quote would break out of the Lua string and inject
+        // arbitrary dispatch commands, so this must round-trip safely.
+        assert_eq!(lua_escape(r#"a"b"#), r#"a\"b"#);
+        assert_eq!(lua_escape(r"a\b"), r"a\\b");
+        assert_eq!(lua_escape("plain"), "plain");
+    }
+
+    #[test]
+    fn hyprctl_reports_failure_as_none() {
+        // hyprctl exits 0 on "unknown request", so status alone is a lie.
+        assert!(hyprctl(&["definitely-not-a-real-subcommand"]).is_none());
+    }
+
+    fn fake_out(stdout: &str, stderr: &str) -> std::process::Output {
+        std::process::Output {
+            status: std::process::Command::new("true").status().unwrap(),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: stderr.as_bytes().to_vec(),
+        }
+    }
+
+    #[test]
+    fn error_text_is_detected_despite_success_exit() {
+        assert!(hyprctl_reported_error(&fake_out("unknown request", "")));
+        assert!(hyprctl_reported_error(&fake_out("", "error: invalid command")));
+        assert!(hyprctl_reported_error(&fake_out("failed to open socket", "")));
+    }
+
+    #[test]
+    fn json_payload_with_error_word_is_not_mistaken_for_failure() {
+        // A window genuinely titled "Error Monitor" must not make the whole
+        // query look like it failed.
+        let json = r#"[{"class":"emacs","title":"Error Monitor: buffer 1"}]"#;
+        assert!(!hyprctl_reported_error(&fake_out(json, "")));
+    }
+
+    #[test]
+    fn plain_json_is_never_an_error() {
+        assert!(!hyprctl_reported_error(&fake_out(r#"{"id":0,"name":"DP-1"}"#, "")));
+        assert!(!hyprctl_reported_error(&fake_out("[]", "")));
+        assert!(!hyprctl_reported_error(&fake_out("", "")));
     }
 }

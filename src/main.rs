@@ -57,14 +57,12 @@ fn main() {
     glib::log_set_writer_func(|level, fields| {
         let mut is_ancestor_warning = false;
         for field in fields {
-            if field.key() == "MESSAGE" {
-                if let Some(msg) = field.value_str() {
-                    if msg.contains("gtk_widget_is_ancestor") {
+            if field.key() == "MESSAGE"
+                && let Some(msg) = field.value_str()
+                    && msg.contains("gtk_widget_is_ancestor") {
                         is_ancestor_warning = true;
                         break;
                     }
-                }
-            }
         }
 
         if is_ancestor_warning {
@@ -118,7 +116,7 @@ fn main() {
         }
 
         let config_ref = config_activate.borrow();
-        style::load_css(&*config_ref);
+        style::load_css(&config_ref);
         drop(config_ref);
 
         let dock = Rc::new(Dock::new(app, Rc::clone(&config_activate)));
@@ -178,14 +176,12 @@ fn main() {
                 let (tx, rx) = std::sync::mpsc::channel();
                 if let Ok(mut watcher) = notify::recommended_watcher(tx) {
                     let _ = watcher.watch(&wal_dir, RecursiveMode::NonRecursive);
-                    for event in rx {
-                        if let Ok(e) = event {
-                            let is_css = e.paths.iter().any(|p| {
-                                p.extension().map_or(false, |ext| ext == "css")
-                            });
-                            if is_css && (e.kind.is_modify() || e.kind.is_create()) {
-                                let _ = tx_pywal.send_blocking(());
-                            }
+                    for e in rx.into_iter().flatten() {
+                        let is_css = e.paths.iter().any(|p| {
+                            p.extension().is_some_and(|ext| ext == "css")
+                        });
+                        if is_css && (e.kind.is_modify() || e.kind.is_create()) {
+                            let _ = tx_pywal.send_blocking(());
                         }
                     }
                 }
@@ -205,7 +201,7 @@ fn main() {
                     glib::timeout_add_local_once(Duration::from_millis(60), move || {
                         deb.set(false);
                         let cfg = config.borrow();
-                        style::load_css(&*cfg);
+                        style::load_css(&cfg);
                         drop(cfg);
                         dock.refresh();
                     });
@@ -220,18 +216,16 @@ fn main() {
             if let Some(mut conf_dir) = dirs::config_dir() {
                 conf_dir.push("rust-dock");
                 let (tx, rx) = std::sync::mpsc::channel();
-                if let Ok(mut watcher) = notify::recommended_watcher(tx) {
-                    if conf_dir.exists() {
+                if let Ok(mut watcher) = notify::recommended_watcher(tx)
+                    && conf_dir.exists() {
                         let _ = watcher.watch(&conf_dir, RecursiveMode::Recursive);
                         for event in rx {
-                            if let Ok(e) = event {
-                                if e.kind.is_modify() || e.kind.is_create() {
+                            if let Ok(e) = event
+                                && (e.kind.is_modify() || e.kind.is_create()) {
                                     let _ = tx_cfg.send_blocking(());
                                 }
-                            }
                         }
                     }
-                }
             }
         });
 
@@ -253,7 +247,7 @@ fn main() {
                         cli.apply_to(&mut new_cfg);
                         *config.borrow_mut() = new_cfg;
                         let cfg = config.borrow();
-                        style::load_css(&*cfg);
+                        style::load_css(&cfg);
                         drop(cfg);
                         dock.refresh();
                     });
@@ -265,7 +259,7 @@ fn main() {
         let (tx_sig, rx_sig) = async_channel::unbounded::<i32>();
         std::thread::spawn(move || {
             use signal_hook::iterator::Signals;
-            if let Ok(mut signals) = Signals::new(&[
+            if let Ok(mut signals) = Signals::new([
                 signal_hook::consts::SIGUSR1,
                 signal_hook::consts::SIGUSR2,
                 signal_hook::consts::SIGHUP,

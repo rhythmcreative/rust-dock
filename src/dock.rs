@@ -5,7 +5,7 @@ use gtk4::{
 };
 use gtk4_layer_shell::{Edge, Layer, LayerShell};
 use crate::config::Config;
-use crate::hyprland_handler::{HyprlandHandler, HyprClient, capture_window_screenshot};
+use crate::hyprland_handler::{HyprlandHandler, HyprClient, capture_window_screenshot, hypr_dispatch_lua_pub};
 use crate::app_info::AppInfo;
 use std::rc::{Rc, Weak};
 use std::cell::{RefCell, Cell};
@@ -174,18 +174,16 @@ impl Dock {
         box_container.set_margin_bottom(2);
         window.set_child(Some(&box_container));
 
-        if let Some(monitor_name) = &cfg.output {
-            if let Some(display) = gtk4::gdk::Display::default() {
+        if let Some(monitor_name) = &cfg.output
+            && let Some(display) = gtk4::gdk::Display::default() {
                 let monitors = display.monitors();
                 for i in 0..monitors.n_items() {
-                    if let Some(m) = monitors.item(i).and_then(|m| m.downcast::<gtk4::gdk::Monitor>().ok()) {
-                        if m.connector().map(|c| c.to_string()).as_deref() == Some(monitor_name) {
+                    if let Some(m) = monitors.item(i).and_then(|m| m.downcast::<gtk4::gdk::Monitor>().ok())
+                        && m.connector().map(|c| c.to_string()).as_deref() == Some(monitor_name) {
                             window.set_monitor(Some(&m)); break;
                         }
-                    }
                 }
             }
-        }
 
         let smart_view       = cfg.smart_view;
         let auto_hide_delay  = cfg.auto_hide_delay as u64;
@@ -235,19 +233,17 @@ impl Dock {
                 }
             }
 
-            if let Some(monitor_name) = &cfg.output {
-                if let Some(display) = gtk4::gdk::Display::default() {
+            if let Some(monitor_name) = &cfg.output
+                && let Some(display) = gtk4::gdk::Display::default() {
                     let monitors = display.monitors();
                     for i in 0..monitors.n_items() {
-                        if let Some(m) = monitors.item(i).and_then(|m| m.downcast::<gtk4::gdk::Monitor>().ok()) {
-                            if m.connector().map(|c| c.to_string()).as_deref() == Some(monitor_name) {
+                        if let Some(m) = monitors.item(i).and_then(|m| m.downcast::<gtk4::gdk::Monitor>().ok())
+                            && m.connector().map(|c| c.to_string()).as_deref() == Some(monitor_name) {
                                 det_win.set_monitor(Some(&m));
                                 break;
                             }
-                        }
                     }
                 }
-            }
 
             let motion_det  = EventControllerMotion::new();
             let st_f        = Rc::clone(&smart_hide_timer);
@@ -318,19 +314,17 @@ impl Dock {
             _       => { preview_win.set_anchor(Edge::Bottom, true); preview_win.set_anchor(Edge::Left, true); }
         }
 
-        if let Some(monitor_name) = &cfg.output {
-            if let Some(display) = gtk4::gdk::Display::default() {
+        if let Some(monitor_name) = &cfg.output
+            && let Some(display) = gtk4::gdk::Display::default() {
                 let monitors = display.monitors();
                 for i in 0..monitors.n_items() {
-                    if let Some(m) = monitors.item(i).and_then(|m| m.downcast::<gtk4::gdk::Monitor>().ok()) {
-                        if m.connector().map(|c| c.to_string()).as_deref() == Some(monitor_name) {
+                    if let Some(m) = monitors.item(i).and_then(|m| m.downcast::<gtk4::gdk::Monitor>().ok())
+                        && m.connector().map(|c| c.to_string()).as_deref() == Some(monitor_name) {
                             preview_win.set_monitor(Some(&m));
                             break;
                         }
-                    }
                 }
             }
-        }
         preview_win.add_css_class("dock-preview-window");
 
         let show_timer: Rc<Cell<Option<glib::SourceId>>> = Rc::new(Cell::new(None));
@@ -717,7 +711,7 @@ impl Dock {
 
         // Sort alphabetically if configured.
         if self.config.borrow().sort_running_apps {
-            running_ordered.sort_by(|(_, a), (_, b)| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            running_ordered.sort_by_key(|(_, a)| a.name.to_lowercase());
         }
 
         let pinned_apps = self.config.borrow().pinned_apps.clone();
@@ -730,7 +724,7 @@ impl Dock {
             running_ordered.iter().map(|(k, _)| k.clone()).collect();
         let extra_minimized: Vec<(String, AppInfo)> = MINIMIZED.with(|m| {
             m.borrow().values()
-                .map(|(_, _, _, _, class)| class.clone())
+                .map(|saved| saved.class.clone())
                 .filter(|cls| !already_shown.contains(cls) && !pinned_lower.contains(cls))
                 .collect::<std::collections::HashSet<_>>()
                 .into_iter()
@@ -752,7 +746,7 @@ impl Dock {
                 None => {
                     // Window is in special:minimized — count from MINIMIZED map.
                     let n = MINIMIZED.with(|m| {
-                        m.borrow().values().filter(|(_, _, _, _, cls)| cls == class_key).count()
+                        m.borrow().values().filter(|saved| saved.class == *class_key).count()
                     });
                     if n == 0 { continue; }
                     n
@@ -800,10 +794,14 @@ impl Dock {
             .build();
 
         let vbox = Box::builder().orientation(Orientation::Vertical).spacing(2).build();
+        // Kept around so the drag source can show the real icon under the
+        // cursor instead of letting GTK fall back to a text preview.
+        let mut icon_image: Option<Image> = None;
         if let Some(icon_name) = &app.icon {
             let img = create_icon_image(icon_name);
             img.set_pixel_size(self.config.borrow().icon_size);
             vbox.append(&img);
+            icon_image = Some(img);
         } else {
             vbox.append(&Label::new(Some(&app.name)));
         }
@@ -1050,19 +1048,24 @@ impl Dock {
                         MINIMIZED.with(|m| {
                             let mut map = m.borrow_mut();
                             for win in &to_min {
-                                map.insert(win.address.clone(),
-                                    (win.workspace.id, win.floating, win.at, win.size,
-                                     win.class.to_lowercase()));
+                                map.insert(win.address.clone(), MinimizedWindow {
+                                    workspace: win.workspace.id,
+                                    floating:  win.floating,
+                                    at:        win.at,
+                                    size:      win.size,
+                                    class:     win.class.to_lowercase(),
+                                });
                             }
                         });
                         save_minimized_state();
                         for win in &to_min {
                             let lua = format!("hl.dsp.window.move({{workspace=\"special:minimized\", window=\"address:{}\"}})", win.address);
-                            let ok = std::process::Command::new("hyprctl").args(["dispatch", &lua]).output()
-                                .map(|o| o.status.success()).unwrap_or(false);
-                            if !ok {
-                                let _ = std::process::Command::new("hyprctl")
-                                    .args(["dispatch", "movetoworkspacesilent", &format!("special:minimized,address:{}", win.address)])
+                            // Runs inside a loop over every minimized window, so
+                            // this must stay bounded — `hyprctl_dispatch` caps the
+                            // fallback at 1s instead of blocking indefinitely.
+                            if !hypr_dispatch_lua_pub(&lua) {
+                                let _ = std::process::Command::new("timeout")
+                                    .args(["1", "hyprctl", "dispatch", "movetoworkspacesilent", &format!("special:minimized,address:{}", win.address)])
                                     .spawn();
                             }
                         }
@@ -1083,26 +1086,25 @@ impl Dock {
                     let dw_rst    = dock_weak_min.clone();
                     rst_item.connect_clicked(move |_| {
                         let wins = HyprlandHandler::new().get_clients_for_class(&class_rst);
-                        let to_restore: Vec<(String, i32, bool, [i32; 2], [i32; 2])> =
+                        let to_restore: Vec<(String, MinimizedWindow)> =
                             MINIMIZED.with(|m| {
                                 let map = m.borrow();
                                 wins.iter()
-                                    .filter_map(|w| map.get(&w.address)
-                                        .map(|(ws, fl, at, sz, _)| (w.address.clone(), *ws, *fl, *at, *sz)))
+                                    .filter_map(|w| map.get(&w.address).map(|saved| (w.address.clone(), saved.clone())))
                                     .collect()
                             });
                         MINIMIZED.with(|m| m.borrow_mut()
-                            .retain(|k, _| !to_restore.iter().any(|(a,_,_,_,_)| a == k)));
+                            .retain(|k, _| !to_restore.iter().any(|(a, _)| a == k)));
                         save_minimized_state();
-                        for (addr, ws_id, floating, at, size) in &to_restore {
-                            crate::hyprland_handler::hypr_move_to_workspace(addr, *ws_id);
-                            if *floating {
-                                crate::hyprland_handler::hypr_move_window_pixel(addr, at[0], at[1]);
-                                crate::hyprland_handler::hypr_resize_window_pixel(addr, size[0], size[1]);
+                        for (addr, saved) in &to_restore {
+                            crate::hyprland_handler::hypr_move_to_workspace(addr, saved.workspace);
+                            if saved.floating {
+                                crate::hyprland_handler::hypr_move_window_pixel(addr, saved.at[0], saved.at[1]);
+                                crate::hyprland_handler::hypr_resize_window_pixel(addr, saved.size[0], saved.size[1]);
                             }
                         }
-                        if let Some((addr, ws_id, _, _, _)) = to_restore.first() {
-                            crate::hyprland_handler::hypr_focus_workspace(*ws_id);
+                        if let Some((addr, first)) = to_restore.first() {
+                            crate::hyprland_handler::hypr_focus_workspace(first.workspace);
                             crate::hyprland_handler::hypr_focus_window(addr);
                         }
                         pop_rst.popdown();
@@ -1191,6 +1193,21 @@ impl Dock {
             drag.connect_prepare(move |_, _, _| {
                 Some(gtk4::gdk::ContentProvider::for_value(&drag_id.to_value()))
             });
+            // Without an explicit icon, GTK4 renders the dragged *content* as
+            // the drag preview. Ours is a String (the app id), so the cursor
+            // showed a text label instead of the app icon. Snapshot the real
+            // icon into a paintable and hand that over instead.
+            let drag_icon = icon_image.as_ref().map(|img| {
+                // Snapshot the icon widget; the paintable follows it live, so a
+                // theme/icon-size change is reflected without rebuilding here.
+                gtk4::WidgetPaintable::new(Some(img))
+            });
+            if let Some(paintable) = &drag_icon {
+                // Anchor the preview at its centre so the cursor sits on the
+                // middle of the icon rather than its top-left corner.
+                let size = self.config.borrow().icon_size;
+                drag.set_icon(Some(paintable), size / 2, size / 2);
+            }
             // Visual feedback: fade the icon being dragged.
             let btn_drag_begin = btn.clone();
             drag.connect_drag_begin(move |_, _| {
@@ -1239,15 +1256,30 @@ impl Dock {
     }
 }
 
+/// A minimized window's remembered state, so it can be put back exactly where
+/// it was. Named fields instead of a bare tuple: the position of each element
+/// was otherwise only discoverable by counting commas.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct MinimizedWindow {
+    /// Workspace the window was on before being minimized.
+    workspace: i32,
+    floating:  bool,
+    /// Top-left position in on-screen pixels.
+    at:        [i32; 2],
+    /// Width and height in on-screen pixels.
+    size:      [i32; 2],
+    /// Lowercased window class.
+    class:     String,
+}
+
 thread_local! {
     /// Per-app index so repeated clicks cycle through the app's open windows.
     static CYCLE_IDX: RefCell<std::collections::HashMap<String, usize>> =
         RefCell::new(std::collections::HashMap::new());
 
-    /// Tracks minimized windows: address → (original_workspace_id, floating, at, size, class).
-    static MINIMIZED: RefCell<std::collections::HashMap<String, (i32, bool, [i32; 2], [i32; 2], String)>> =
+    /// Minimized windows keyed by their Hyprland address.
+    static MINIMIZED: RefCell<std::collections::HashMap<String, MinimizedWindow>> =
         RefCell::new(std::collections::HashMap::new());
-
 }
 
 fn minimized_state_path() -> Option<std::path::PathBuf> {
@@ -1270,13 +1302,10 @@ fn save_minimized_state() {
 /// refresh() so multi-monitor dock instances stay in sync without mtime tricks.
 fn load_minimized_state() {
     let Some(path) = minimized_state_path() else { return };
-    if let Ok(data) = std::fs::read_to_string(&path) {
-        if let Ok(map) = serde_json::from_str::<
-            std::collections::HashMap<String, (i32, bool, [i32; 2], [i32; 2], String)>
-        >(&data) {
+    if let Ok(data) = std::fs::read_to_string(&path)
+        && let Ok(map) = serde_json::from_str::<std::collections::HashMap<String, MinimizedWindow>>(&data) {
             MINIMIZED.with(|m| *m.borrow_mut() = map);
         }
-    }
 }
 
 
@@ -1292,23 +1321,21 @@ fn focus_or_launch(app: &AppInfo) {
 
     // Restore minimized windows (dms-minimize approach):
     // movetoworkspace to the ORIGINAL workspace — never touches special:minimized visually.
-    let to_restore: Vec<(String, i32, bool, [i32; 2], [i32; 2])> = MINIMIZED.with(|m| {
+    let to_restore: Vec<(String, MinimizedWindow)> = MINIMIZED.with(|m| {
         let map = m.borrow();
         windows.iter()
-            .filter_map(|w| map.get(&w.address)
-                .map(|(ws, fl, at, sz, _)| (w.address.clone(), *ws, *fl, *at, *sz)))
+            .filter_map(|w| map.get(&w.address).map(|saved| (w.address.clone(), saved.clone())))
             .collect()
     });
-    if !to_restore.is_empty() {
-        let first_addr = to_restore[0].0.clone();
-        let first_ws   = to_restore[0].1;
-        MINIMIZED.with(|m| m.borrow_mut().retain(|k, _| !to_restore.iter().any(|(a,_,_,_,_)| a == k)));
+    if let Some((first_addr, first)) = to_restore.first() {
+        let (first_addr, first_ws) = (first_addr.clone(), first.workspace);
+        MINIMIZED.with(|m| m.borrow_mut().retain(|k, _| !to_restore.iter().any(|(a, _)| a == k)));
         save_minimized_state();
-        for (addr, ws_id, floating, at, size) in &to_restore {
-            crate::hyprland_handler::hypr_move_to_workspace(addr, *ws_id);
-            if *floating {
-                crate::hyprland_handler::hypr_move_window_pixel(addr, at[0], at[1]);
-                crate::hyprland_handler::hypr_resize_window_pixel(addr, size[0], size[1]);
+        for (addr, saved) in &to_restore {
+            crate::hyprland_handler::hypr_move_to_workspace(addr, saved.workspace);
+            if saved.floating {
+                crate::hyprland_handler::hypr_move_window_pixel(addr, saved.at[0], saved.at[1]);
+                crate::hyprland_handler::hypr_resize_window_pixel(addr, saved.size[0], saved.size[1]);
             }
         }
         crate::hyprland_handler::hypr_focus_workspace(first_ws);
@@ -1672,9 +1699,9 @@ fn spawn_screenshot_updates(
             while let Some(w) = card_w {
                 if i == idx {
                     // Card is a Box: first child = header, second child = thumb.
-                    if let Ok(card) = w.clone().downcast::<Box>() {
-                        if let Some(thumb_widget) = card.first_child().and_then(|h| h.next_sibling()) {
-                            if let Ok(thumb) = thumb_widget.downcast::<Box>() {
+                    if let Ok(card) = w.clone().downcast::<Box>()
+                        && let Some(thumb_widget) = card.first_child().and_then(|h| h.next_sibling())
+                            && let Ok(thumb) = thumb_widget.downcast::<Box>() {
                                 if let Some(old) = thumb.first_child() { thumb.remove(&old); }
                                 let pic = gtk4::Picture::builder()
                                     .file(&gio::File::for_path(&path))
@@ -1688,8 +1715,6 @@ fn spawn_screenshot_updates(
                                 pic.set_content_fit(gtk4::ContentFit::Cover);
                                 thumb.append(&pic);
                             }
-                        }
-                    }
                     break;
                 }
                 i += 1;
@@ -1839,4 +1864,50 @@ fn find_icon_file_uncached(name: &str) -> Option<std::path::PathBuf> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample() -> MinimizedWindow {
+        MinimizedWindow {
+            workspace: 3,
+            floating:  true,
+            at:        [120, 45],
+            size:      [800, 600],
+            class:     "kitty".to_string(),
+        }
+    }
+
+    #[test]
+    fn minimized_state_round_trips_through_json() {
+        // This struct is what gets persisted to
+        // $XDG_RUNTIME_DIR/rust-dock-minimized.json, so losing a field silently
+        // would restore windows to the wrong workspace or geometry.
+        let json = serde_json::to_string(&sample()).unwrap();
+        let back: MinimizedWindow = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, sample());
+    }
+
+    #[test]
+    fn minimized_state_uses_named_keys_not_positional_arrays() {
+        let json = serde_json::to_string(&sample()).unwrap();
+        assert!(json.contains("\"workspace\""), "got {json}");
+        assert!(json.contains("\"floating\""), "got {json}");
+        assert!(json.contains("\"at\""), "got {json}");
+        assert!(json.contains("\"size\""), "got {json}");
+        assert!(json.contains("\"class\""), "got {json}");
+    }
+
+    #[test]
+    fn old_tuple_format_is_rejected_rather_than_misread() {
+        // Tuples used to serialize as `[[3,true,[120,45],[800,600],"kitty"]]`.
+        // Silently accepting that shape under different field names would put
+        // windows back on the wrong workspace, so it must fail loudly instead.
+        let old = r#"[[3,true,[120,45],[800,600],"kitty"]]"#;
+        let parsed: Result<std::collections::HashMap<String, MinimizedWindow>, _> =
+            serde_json::from_str(old);
+        assert!(parsed.is_err());
+    }
 }

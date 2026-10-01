@@ -63,11 +63,10 @@ pub fn load_css(config: &Config) {
 
     if let Some(mut pywal_path) = dirs::cache_dir() {
         pywal_path.push("wal/colors-waybar.css");
-        if pywal_path.exists() {
-            if let Ok(pywal_css) = std::fs::read_to_string(pywal_path) {
+        if pywal_path.exists()
+            && let Ok(pywal_css) = std::fs::read_to_string(pywal_path) {
                 css_data.push_str(&pywal_css);
             }
-        }
     }
 
     let default_css = format!("
@@ -363,21 +362,18 @@ pub fn load_css(config: &Config) {
 
     css_data.push_str(&default_css);
 
-    if let Some(path) = &config.style {
-        if path.exists() {
-            if let Ok(user_css) = std::fs::read_to_string(path) {
+    if let Some(path) = &config.style
+        && path.exists()
+            && let Ok(user_css) = std::fs::read_to_string(path) {
                 css_data.push_str(&user_css);
             }
-        }
-    }
 
     if let Some(mut theme_path) = dirs::config_dir() {
         theme_path.push(format!("rust-dock/themes/{}/style.css", config.current_theme));
-        if theme_path.exists() {
-            if let Ok(theme_css) = std::fs::read_to_string(theme_path) {
+        if theme_path.exists()
+            && let Ok(theme_css) = std::fs::read_to_string(theme_path) {
                 css_data.push_str(&theme_css);
             }
-        }
     }
 
     PROVIDER.with(|slot| {

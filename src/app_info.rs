@@ -55,16 +55,15 @@ impl AppInfo {
                 Some(f) => f.to_lowercase(),
                 None => continue,
             };
-            if fname == id_lower || fname == id_with_ext {
-                if let Ok(entry) = DesktopEntry::from_path(&path, None::<&[&str]>) {
+            if (fname == id_lower || fname == id_with_ext)
+                && let Ok(entry) = DesktopEntry::from_path(&path, None::<&[&str]>) {
                     return Some(AppInfo {
                         id: id.to_string(),
                         name: entry.name::<&str>(&[]).map(|s| s.to_string()).unwrap_or_else(|| id.to_string()),
-                        icon: entry.icon().map(|s| resolve_icon_name(s)),
+                        icon: entry.icon().map(resolve_icon_name),
                         exec: entry.exec().map(|s| s.to_string()).unwrap_or_default(),
                     });
                 }
-            }
         }
 
         // Fallback: treat the id as a window class name and search by StartupWMClass.
@@ -95,20 +94,16 @@ impl AppInfo {
 
         for path in Iter::new(Self::get_search_paths().into_iter()) {
             let filename = path.file_name().and_then(|s| s.to_str()).unwrap_or_default().to_lowercase();
-            if filename == class_desktop {
-                if let Ok(entry) = DesktopEntry::from_path(&path, None::<&[&str]>) {
+            if filename == class_desktop
+                && let Ok(entry) = DesktopEntry::from_path(&path, None::<&[&str]>) {
                     return Some(AppInfo::from_entry(class, &entry));
                 }
-            }
-            if wm_class_match.is_none() {
-                if let Ok(entry) = DesktopEntry::from_path(&path, None::<&[&str]>) {
-                    if let Some(wm_class) = entry.startup_wm_class() {
-                        if wm_class.to_lowercase() == class_lower {
+            if wm_class_match.is_none()
+                && let Ok(entry) = DesktopEntry::from_path(&path, None::<&[&str]>)
+                    && let Some(wm_class) = entry.startup_wm_class()
+                        && wm_class.to_lowercase() == class_lower {
                             wm_class_match = Some(AppInfo::from_entry(class, &entry));
                         }
-                    }
-                }
-            }
         }
 
         wm_class_match
@@ -119,7 +114,7 @@ impl AppInfo {
         AppInfo {
             id: class_lower,
             name: entry.name::<&str>(&[]).map(|s| s.to_string()).unwrap_or_else(|| class.to_string()),
-            icon: entry.icon().map(|s| resolve_icon_name(s)),
+            icon: entry.icon().map(resolve_icon_name),
             exec: entry.exec().map(|s| s.to_string()).unwrap_or_default(),
         }
     }
