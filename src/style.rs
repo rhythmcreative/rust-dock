@@ -82,12 +82,28 @@ pub fn load_css(config: &Config) {
 
     let default_css = format!("
         /* ── Dock window (only rust-dock, not dock-preview) ─── */
-        window:not(.dock-preview-window) {{
+        window.rust-dock-window,
+        window.rust-dock-window.background,
+        window.rust-dock-window.background.csd,
+        window.rust-dock-window decoration,
+        window.rust-dock-window decoration:backdrop,
+        window:not(.dock-preview-window),
+        window:not(.dock-preview-window).background,
+        window:not(.dock-preview-window).background.csd,
+        window:not(.dock-preview-window) decoration,
+        window:not(.dock-preview-window) decoration:backdrop {{
+            background: transparent !important;
+            background-color: transparent !important;
+            border: none !important;
+            box-shadow: none !important;
+            margin: 0 !important;
+            padding: 0 !important;
+        }}
+        .dock-container {{
             background-color: alpha(@background, {opacity});
             border-radius: {radius}px;
             border: 1px solid alpha(@color1, 0.35);
-        }}
-        .dock-container {{
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
             padding: {padding}px;
             transition: transform 220ms cubic-bezier(0.4, 0, 1, 1), opacity 200ms ease;
         }}
@@ -395,7 +411,7 @@ pub fn load_css(config: &Config) {
                 gtk4::style_context_add_provider_for_display(
                     &display,
                     &prov,
-                    gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                    gtk4::STYLE_PROVIDER_PRIORITY_USER,
                 );
             }
             prov
@@ -418,12 +434,12 @@ pub fn load_css(config: &Config) {
         window.dock-preview-window contents,\
         window.dock-preview-window decoration,\
         window.dock-preview-window decoration:backdrop {\
-            background: transparent;\
-            background-color: transparent;\
-            border: none;\
-            box-shadow: none;\
-            margin: 0;\
-            padding: 0;\
+            background: transparent !important;\
+            background-color: transparent !important;\
+            border: none !important;\
+            box-shadow: none !important;\
+            margin: 0 !important;\
+            padding: 0 !important;\
             border-radius: RADIUS;\
         }\
     "
@@ -434,12 +450,10 @@ pub fn load_css(config: &Config) {
         let provider = slot.get_or_insert_with(|| {
             let prov = CssProvider::new();
             if let Some(display) = gtk4::gdk::Display::default() {
-                // THEME priority is the only one above USER, which is where the
-                // global gtk.css (window background) lives.
                 gtk4::style_context_add_provider_for_display(
                     &display,
                     &prov,
-                    gtk4::STYLE_PROVIDER_PRIORITY_THEME,
+                    gtk4::STYLE_PROVIDER_PRIORITY_USER,
                 );
             }
             prov

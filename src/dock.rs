@@ -75,6 +75,7 @@ impl Dock {
         window.init_layer_shell();
         window.set_namespace(Some("rust-dock"));
         window.set_decorated(false);
+        window.add_css_class("rust-dock-window");
 
         let cfg = config.borrow();
 
