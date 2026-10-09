@@ -69,6 +69,78 @@ impl AppInfo {
         // Fallback: treat the id as a window class name and search by StartupWMClass.
         // Covers apps whose desktop filename differs from their WM class
         // (e.g. pinned as "code" but desktop file is "code - oss.desktop").
+        if let Some(app) = Self::find_by_class_uncached(id) {
+            return Some(app);
+        }
+
+        // Distribution-agnostic alias fallback for standard applications
+        let aliases: &[&str] = match id_lower.as_str() {
+            "chromium" | "google-chrome" | "browser" => &[
+                "chromium",
+                "google-chrome",
+                "brave-origin-nightly",
+                "brave-browser",
+                "firefox",
+                "zen-browser",
+            ],
+            "firefox" => &[
+                "firefox",
+                "firefox-esr",
+                "floorp",
+                "zen-browser",
+                "brave-origin-nightly",
+                "chromium",
+            ],
+            "vesktop" | "discord" => &["vesktop", "discord", "webcord", "armcord"],
+            "org.telegram.desktop" | "telegram" | "telegram-desktop" => &[
+                "org.telegram.desktop",
+                "telegram-desktop",
+                "telegramdesktop",
+                "telegram",
+            ],
+            "thunar" | "files" | "file-manager" => &[
+                "thunar",
+                "org.gnome.Nautilus",
+                "nemo",
+                "dolphin",
+                "pcmanfm",
+            ],
+            _ => &[],
+        };
+
+        for &alias in aliases {
+            if alias == id_lower {
+                continue;
+            }
+            if let Some(mut app) = Self::find_by_id_uncached_single(alias) {
+                app.id = alias.to_string();
+                return Some(app);
+            }
+        }
+
+        None
+    }
+
+    fn find_by_id_uncached_single(id: &str) -> Option<Self> {
+        let paths = Self::get_search_paths();
+        let id_lower = id.to_lowercase();
+        let id_with_ext = format!("{}.desktop", id_lower);
+
+        for path in Iter::new(paths.into_iter()) {
+            let fname = match path.file_name().and_then(|s| s.to_str()) {
+                Some(f) => f.to_lowercase(),
+                None => continue,
+            };
+            if (fname == id_lower || fname == id_with_ext)
+                && let Ok(entry) = DesktopEntry::from_path(&path, None::<&[&str]>) {
+                    return Some(AppInfo {
+                        id: id.to_string(),
+                        name: entry.name::<&str>(&[]).map(|s| s.to_string()).unwrap_or_else(|| id.to_string()),
+                        icon: entry.icon().map(resolve_icon_name),
+                        exec: entry.exec().map(|s| s.to_string()).unwrap_or_default(),
+                    });
+                }
+        }
         Self::find_by_class_uncached(id)
     }
 

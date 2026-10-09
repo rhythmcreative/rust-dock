@@ -61,12 +61,23 @@ pub fn load_css(config: &Config) {
          @define-color color15 #a6adc8;\n",
     );
 
+    let mut pywal_loaded = false;
     if let Some(mut pywal_path) = dirs::cache_dir() {
         pywal_path.push("wal/colors-waybar.css");
         if pywal_path.exists()
             && let Ok(pywal_css) = std::fs::read_to_string(pywal_path) {
                 css_data.push_str(&pywal_css);
+                pywal_loaded = true;
             }
+    }
+    if !pywal_loaded {
+        if let Some(mut waybar_path) = dirs::config_dir() {
+            waybar_path.push("waybar/colors-pywal.css");
+            if waybar_path.exists()
+                && let Ok(waybar_css) = std::fs::read_to_string(waybar_path) {
+                    css_data.push_str(&waybar_css);
+                }
+        }
     }
 
     let default_css = format!("

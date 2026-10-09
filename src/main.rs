@@ -176,6 +176,12 @@ fn main() {
                 let (tx, rx) = std::sync::mpsc::channel();
                 if let Ok(mut watcher) = notify::recommended_watcher(tx) {
                     let _ = watcher.watch(&wal_dir, RecursiveMode::NonRecursive);
+                    if let Some(mut waybar_dir) = dirs::config_dir() {
+                        waybar_dir.push("waybar");
+                        if waybar_dir.exists() {
+                            let _ = watcher.watch(&waybar_dir, RecursiveMode::NonRecursive);
+                        }
+                    }
                     for e in rx.into_iter().flatten() {
                         let is_css = e.paths.iter().any(|p| {
                             p.extension().is_some_and(|ext| ext == "css")
